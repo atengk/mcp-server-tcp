@@ -46,3 +46,33 @@ class SendOnceResult(TypedDict):
     received_bytes: int
     response_data: Optional[str]
     error: Optional[str]
+
+
+class ConnectResult(TypedDict):
+    """长连接建立结果契约。"""
+
+    connected: bool
+    conn_id: Optional[str]
+    host: str
+    port: int
+    error: Optional[str]
+
+
+class DisconnectResult(TypedDict):
+    """关闭长连接操作结果契约。"""
+
+    conn_id: str
+    disconnected: bool
+    message: str
+
+
+class ConnectionInfo(TypedDict):
+    """活跃连接详情视图契约。"""
+
+    conn_id: str
+    host: str
+    port: int
+    created_at: float
+    idle_seconds: float
+    unread_bytes: int
+    is_active: bool
