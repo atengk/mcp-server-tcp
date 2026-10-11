@@ -15,8 +15,13 @@ from mcp_server_tcp.security import SSRFSecurityError
 @pytest.mark.asyncio
 async def test_pool_connect_and_disconnect() -> None:
     """验证长连接建立、分配唯一 conn_id 以及断开释放。"""
-    # 1. 启动本地回环服务器
-    server = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+    # 1. 启动本地回环服务器并安全收集连接
+    server_writers = []
+
+    async def _handle(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
+        server_writers.append(w)
+
+    server = await asyncio.start_server(_handle, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     pool = ConnectionPool(max_connections=5, idle_timeout_s=60.0)
 
@@ -42,8 +47,11 @@ async def test_pool_connect_and_disconnect() -> None:
         assert len(pool.list_connections()) == 0
     finally:
         await pool.close_all()
+        for w in server_writers:
+            w.close()
         server.close()
         await server.wait_closed()
+
 
 
 @pytest.mark.asyncio

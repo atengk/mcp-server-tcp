@@ -173,7 +173,7 @@ class ConnectionPool:
             logger.info("Connection established: %s -> %s:%d", conn_id, host, port)
             return conn
 
-    def register_server_connection(
+    async def register_server_connection(
         self,
         server_id: str,
         host: str,
@@ -191,17 +191,19 @@ class ConnectionPool:
         @param writer asyncio 流写入器
         @return Connection 实例
         """
-        self._prune_inactive()
-        if len(self._connections) >= self.max_connections:
-            raise MaxConnectionsReachedError(
-                f"Max connections limit ({self.max_connections}) reached."
-            )
+        async with self._lock:
+            self._prune_inactive()
+            if len(self._connections) >= self.max_connections:
+                raise MaxConnectionsReachedError(
+                    f"Max connections limit ({self.max_connections}) reached."
+                )
 
-        conn_id = f"srv_{server_id}_c_{uuid.uuid4().hex[:6]}"
-        conn = Connection(conn_id, host, port, reader, writer, is_server_accepted=True)
-        self._connections[conn_id] = conn
-        logger.info("Inbound connection registered: %s from %s:%d", conn_id, host, port)
-        return conn
+            conn_id = f"srv_{server_id}_c_{uuid.uuid4().hex[:6]}"
+            conn = Connection(conn_id, host, port, reader, writer, is_server_accepted=True)
+            self._connections[conn_id] = conn
+            logger.info("Inbound connection registered: %s from %s:%d", conn_id, host, port)
+            return conn
+
 
     async def disconnect(self, conn_id: str) -> bool:
         """
