@@ -75,7 +75,7 @@ jobs:
       # ------------------------------------------------------------------------
       - name: 登录 GHCR
         if: steps.check-tag.outputs.skip != 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -85,7 +85,7 @@ jobs:
       # 方式 B (可选扩展)：如需同时推送至 Docker Hub，解除下方注释并配置 Secrets
       # ------------------------------------------------------------------------
       # - name: 登录 Docker Hub
-      #   uses: docker/login-action@v3
+      #   uses: docker/login-action@v4
       #   with:
       #     username: ${{ secrets.DOCKERHUB_USERNAME }}
       #     password: ${{ secrets.DOCKERHUB_TOKEN }}
