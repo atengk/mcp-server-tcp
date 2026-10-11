@@ -17,6 +17,13 @@ dependencies = [
     "mcp[cli]>=1.0.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
 [project.scripts]
 mcp-server-tcp = "mcp_server_tcp:main"
 
