@@ -138,3 +138,22 @@ class BroadcastResult(TypedDict):
     error: Optional[str]
 
 
+class TrafficRecord(TypedDict):
+    """单条流量审计记录项契约。"""
+
+    timestamp: float
+    direction: str  # "IN" 或 "OUT"
+    bytes_count: int
+    hex_preview: str
+    text_preview: str
+
+
+class TrafficDumpResult(TypedDict):
+    """流量审计记录回溯结果契约。"""
+
+    conn_id: str
+    total_records: int
+    records: List[TrafficRecord]
+
+
+

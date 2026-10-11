@@ -5,6 +5,7 @@ MCP 服务端实例定义与工具注册。
 @since 2026-10-11
 """
 
+import json
 from typing import List, Optional
 
 from mcp.server.mcpserver import MCPServer
@@ -22,7 +23,9 @@ from mcp_server_tcp.models import (
     SendResult,
     StartServerResult,
     StopServerResult,
+    TrafficDumpResult,
 )
+
 from mcp_server_tcp.pool import ConnectionPool
 from mcp_server_tcp.probe import (
     tcp_ping_port as _tcp_ping_port,
@@ -278,5 +281,33 @@ async def tcp_broadcast(
         hex_string=hex_string,
         append_crlf=append_crlf,
     )
+
+
+@mcp.tool()
+def tcp_dump_traffic(
+    conn_id: str,
+    limit: int = 100,
+) -> TrafficDumpResult:
+    """
+    回溯指定连接的最近 Traffic Ring Buffer 内存审计记录（最多 100 条）。
+
+    @param conn_id 连接全局唯一标识符
+    @param limit 最大返回记录数（默认 100）
+    @return TrafficDumpResult 字典，包含 conn_id, total_records, records
+    """
+    return pool.dump_traffic(conn_id=conn_id, limit=limit)
+
+
+@mcp.resource("tcp://connection/{conn_id}/traffic", mime_type="application/json")
+def get_connection_traffic_resource(conn_id: str) -> str:
+    """
+    提供指定 TCP 连接的 Traffic Ring Buffer 流量审计数据资源订阅。
+
+    @param conn_id 连接全局唯一标识符
+    @return JSON 序列化的 TrafficDumpResult
+    """
+    dump = pool.dump_traffic(conn_id=conn_id)
+    return json.dumps(dump, ensure_ascii=False, indent=2)
+
 
 

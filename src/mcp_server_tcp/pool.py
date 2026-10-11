@@ -11,6 +11,7 @@ import time
 import uuid
 from typing import Dict, List, Optional
 
+from mcp_server_tcp.audit import TrafficRingBuffer
 from mcp_server_tcp.models import (
     BroadcastResult,
     ConnectionInfo,
@@ -19,8 +20,10 @@ from mcp_server_tcp.models import (
     SendResult,
     StartServerResult,
     StopServerResult,
+    TrafficDumpResult,
 )
 from mcp_server_tcp.security import SSRFSecurityError, validate_target
+
 
 
 logger = logging.getLogger("mcp_server_tcp.pool")
@@ -74,7 +77,10 @@ class Connection:
         self._peer_closed = False
         # 遵循 ADR-0002 的残余未读内存队列
         self.drain_buffer = bytearray()
+        # 遵循 CONTEXT.md 的内存环形流量审计缓冲区
+        self.traffic_buffer = TrafficRingBuffer(capacity=100)
         self._io_lock = asyncio.Lock()
+
 
     @property
     def is_active(self) -> bool:
@@ -139,12 +145,14 @@ class Connection:
                 self.writer.write(payload)
                 await self.writer.drain()
                 self.touch()
+                self.traffic_buffer.record("OUT", payload)
                 return {
                     "conn_id": self.conn_id,
                     "bytes_sent": len(payload),
                     "success": True,
                     "error": None,
                 }
+
             except Exception as exc:
                 logger.warning("Send failed on %s: %s", self.conn_id, exc)
                 return {
@@ -153,6 +161,17 @@ class Connection:
                     "success": False,
                     "error": str(exc),
                 }
+
+    def _return_and_record_in(
+        self,
+        data: bytes,
+        timed_out: bool,
+        closed: bool,
+        error: Optional[str] = None,
+    ) -> tuple[bytes, bool, bool, Optional[str]]:
+        if data:
+            self.traffic_buffer.record("IN", data)
+        return data, timed_out, closed, error
 
     async def recv(
         self,
@@ -177,18 +196,18 @@ class Connection:
                 idx = self.drain_buffer.index(delimiter) + len(delimiter)
                 extracted = bytes(self.drain_buffer[:idx])
                 del self.drain_buffer[:idx]
-                return extracted, False, self.is_peer_closed, None
+                return self._return_and_record_in(extracted, False, self.is_peer_closed, None)
 
             if max_bytes and len(self.drain_buffer) >= max_bytes:
                 extracted = bytes(self.drain_buffer[:max_bytes])
                 del self.drain_buffer[:max_bytes]
-                return extracted, False, self.is_peer_closed, None
+                return self._return_and_record_in(extracted, False, self.is_peer_closed, None)
 
             # 若对端已关闭且 drain_buffer 有残余数据，直接取出排空
             if self.is_peer_closed and self.drain_buffer:
                 extracted = bytes(self.drain_buffer)
                 self.drain_buffer.clear()
-                return extracted, False, True, None
+                return self._return_and_record_in(extracted, False, True, None)
 
             if self.is_peer_closed and not self.drain_buffer:
                 return b"", False, True, None
@@ -202,7 +221,7 @@ class Connection:
                     # 软超时：不抛错，宽容返回当前累积的残余数据
                     partial = bytes(self.drain_buffer)
                     self.drain_buffer.clear()
-                    return partial, True, self.is_peer_closed, None
+                    return self._return_and_record_in(partial, True, self.is_peer_closed, None)
 
                 try:
                     chunk = await asyncio.wait_for(
@@ -212,16 +231,18 @@ class Connection:
                 except asyncio.TimeoutError:
                     partial = bytes(self.drain_buffer)
                     self.drain_buffer.clear()
-                    return partial, True, self.is_peer_closed, None
+                    return self._return_and_record_in(partial, True, self.is_peer_closed, None)
                 except Exception as exc:
-                    return bytes(self.drain_buffer), False, True, str(exc)
+                    partial = bytes(self.drain_buffer)
+                    self.drain_buffer.clear()
+                    return self._return_and_record_in(partial, False, True, str(exc))
 
                 if not chunk:
                     # 对端发送了 FIN/EOF
                     self._peer_closed = True
                     partial = bytes(self.drain_buffer)
                     self.drain_buffer.clear()
-                    return partial, False, True, None
+                    return self._return_and_record_in(partial, False, True, None)
 
                 self.drain_buffer.extend(chunk)
                 if self.reader.at_eof():
@@ -232,19 +253,20 @@ class Connection:
                     idx = self.drain_buffer.index(delimiter) + len(delimiter)
                     extracted = bytes(self.drain_buffer[:idx])
                     del self.drain_buffer[:idx]
-                    return extracted, False, self.is_peer_closed, None
+                    return self._return_and_record_in(extracted, False, self.is_peer_closed, None)
 
                 # 4. 检查是否达成最大字节数条件
                 if max_bytes and len(self.drain_buffer) >= max_bytes:
                     extracted = bytes(self.drain_buffer[:max_bytes])
                     del self.drain_buffer[:max_bytes]
-                    return extracted, False, self.is_peer_closed, None
+                    return self._return_and_record_in(extracted, False, self.is_peer_closed, None)
 
                 # 若未指定 delimiter 且未指定 max_bytes，则首个有效分片即返回
                 if not delimiter and not max_bytes:
                     extracted = bytes(self.drain_buffer)
                     self.drain_buffer.clear()
-                    return extracted, False, self.is_peer_closed, None
+                    return self._return_and_record_in(extracted, False, self.is_peer_closed, None)
+
 
 
 
@@ -766,3 +788,26 @@ class ConnectionPool:
             "closed": closed,
             "error": error,
         }
+
+    def dump_traffic(self, conn_id: str, limit: int = 100) -> TrafficDumpResult:
+        """
+        回溯指定连接的最近 Traffic Ring Buffer 审计记录。
+
+        @param conn_id 连接全局唯一标识符
+        @param limit 最大返回记录条数（默认 100）
+        @return TrafficDumpResult 审计记录结果
+        """
+        conn = self.get(conn_id)
+        if not conn:
+            return {
+                "conn_id": conn_id,
+                "total_records": 0,
+                "records": [],
+            }
+        records = conn.traffic_buffer.dump(limit=limit)
+        return {
+            "conn_id": conn_id,
+            "total_records": len(records),
+            "records": records,
+        }
+
