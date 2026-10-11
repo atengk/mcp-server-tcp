@@ -5,7 +5,9 @@
 @since 2026-10-11
 """
 
-from typing import List, Optional, TypedDict
+from typing import List, Optional
+
+from typing_extensions import TypedDict
 
 
 class PingResult(TypedDict):
