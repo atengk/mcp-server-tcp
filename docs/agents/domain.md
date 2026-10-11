@@ -19,8 +19,12 @@
 ├── CONTEXT.md          # 核心领域模型与术语词汇表
 ├── docs/adr/           # 架构决策记录 (ADR)
 │   ├── 0001-hybrid-connection-pool.md
-│   └── 0002-fastmcp-architecture.md
+│   ├── 0002-soft-timeout-and-drain-buffer.md
+│   ├── 0003-runtime-configuration-and-security-posture.md
+│   ├── 0004-release-artifacts-and-distribution-pipeline.md
+│   └── 0005-full-duplex-buffering-and-security-hardening.md
 └── src/                # 源码目录
+
 ```
 
 ## 严格遵循统一词汇表 (Glossary)

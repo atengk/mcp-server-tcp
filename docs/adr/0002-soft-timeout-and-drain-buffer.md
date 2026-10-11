@@ -2,6 +2,9 @@
 
 针对 TCP 裸流中粘包、半包及网络延迟导致的读取卡死问题，决定在 `tcp_recv_*` 工具中采用“软超时宽容返回（Soft Timeout）”与“优雅残余排出（Drain Buffer）”策略。
 
+> 📌 **架构演进注记 (Amended by ADR-0005)**：关于定界符（Delimiter）截断模式下的半包缓冲保全与 10MB 防 OOM 熔断机制，已在 [ADR-0005](./0005-full-duplex-buffering-and-security-hardening.md) 中进一步修订扩展：定界符模式下软超时返回空载荷并保全半包，裸流分片模式继续执行本 ADR 宽容返回。
+
+
 ## 背景与问题
 
 TCP 是基于字节流（Byte Stream）而非报文流（Message Stream）的传输协议。在实际联调中：

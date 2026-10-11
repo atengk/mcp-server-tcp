@@ -157,13 +157,19 @@ async def tcp_disconnect(
 
 
 @mcp.tool()
-def tcp_list_connections() -> List[ConnectionInfo]:
+def tcp_list_connections(
+    server_id: Optional[str] = None,
+) -> List[ConnectionInfo]:
     """
-    列出当前连接池中所有活跃连接的状态快照。
+    列出当前连接池中所有活跃连接的状态快照，支持按 Mock Server ID 拓扑过滤。
 
-    @return 活跃连接的列表，包含 conn_id, host, port, idle_seconds, unread_bytes 等
+    @param server_id 可选的 Mock Server 全局唯一标识符过滤
+    @return 活跃连接列表，包含 conn_id, host, port, idle_seconds, unread_bytes,
+            server_id, is_server_accepted 等
     """
-    return pool.list_connections()
+    return pool.list_connections(server_id=server_id)
+
+
 
 
 @mcp.tool()

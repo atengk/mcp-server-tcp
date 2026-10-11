@@ -23,13 +23,18 @@ from mcp_server_tcp.models import (
     StopServerResult,
     TrafficDumpResult,
 )
-from mcp_server_tcp.security import validate_target
+from mcp_server_tcp.security import validate_bind_host, validate_target
 
 logger = logging.getLogger("mcp_server_tcp.pool")
 
+# 10MB 防 OOM 门禁上限
+MAX_BUFFER_SIZE = 10 * 1024 * 1024
+
 __all__ = [
+    "BufferOverflowError",
     "Connection",
     "ConnectionPool",
+    "MAX_BUFFER_SIZE",
     "MaxConnectionsReachedError",
 ]
 
@@ -38,6 +43,13 @@ class MaxConnectionsReachedError(RuntimeError):
     """当活跃连接数达到配置的配额上限时抛出。"""
 
     pass
+
+
+class BufferOverflowError(RuntimeError):
+    """当连接残余缓冲区累积数据超出安全阈值（防 OOM 门禁）时抛出。"""
+
+    pass
+
 
 
 class Connection:
@@ -53,6 +65,7 @@ class Connection:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         is_server_accepted: bool = False,
+        server_id: Optional[str] = None,
     ) -> None:
         """
         初始化连接实例。
@@ -63,6 +76,7 @@ class Connection:
         @param reader asyncio 流读取器
         @param writer asyncio 流写入器
         @param is_server_accepted 是否为服务端入站接受的连接
+        @param server_id 归属的 Mock Server 标识符（若为入站连接）
         """
         self.conn_id = conn_id
         self.host = host
@@ -70,15 +84,18 @@ class Connection:
         self.reader = reader
         self.writer = writer
         self.is_server_accepted = is_server_accepted
+        self.server_id = server_id
         self.created_at = time.time()
         self.last_active_at = time.time()
         self._is_closed = False
         self._peer_closed = False
-        # 遵循 ADR-0002 的残余未读内存队列
+        # 遵循 ADR-0002 与 ADR-0005 的残余未读内存队列
         self.drain_buffer = bytearray()
         # 遵循 CONTEXT.md 的内存环形流量审计缓冲区
         self.traffic_buffer = TrafficRingBuffer(capacity=100)
-        self._io_lock = asyncio.Lock()
+        # 全双工读写锁分离（遵循 ADR-0005）
+        self._read_lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
 
     @property
     def is_active(self) -> bool:
@@ -100,7 +117,7 @@ class Connection:
         self.last_active_at = time.time()
 
     async def close(self) -> None:
-        """安全关闭底层 TCP 套接字并等待资源释放。"""
+        """安全关闭底层 TCP 套接字并等待资源释放（穿透式即时注销，遵循 ADR-0005）。"""
         if self._is_closed:
             return
         self._is_closed = True
@@ -121,6 +138,8 @@ class Connection:
             "idle_seconds": round(self.idle_seconds, 2),
             "unread_bytes": unread,
             "is_active": self.is_active,
+            "server_id": self.server_id,
+            "is_server_accepted": self.is_server_accepted,
         }
 
     async def send(self, payload: bytes) -> SendResult:
@@ -138,7 +157,7 @@ class Connection:
                 "error": f"Connection {self.conn_id} is already closed.",
             }
 
-        async with self._io_lock:
+        async with self._write_lock:
             try:
                 self.writer.write(payload)
                 await self.writer.drain()
@@ -178,7 +197,7 @@ class Connection:
         max_bytes: Optional[int] = None,
     ) -> tuple[bytes, bool, bool, Optional[str]]:
         """
-        底层流式读取，具备软超时 (Soft Timeout) 与优雅排空 (Drain Buffer) 机制。
+        底层流式读取，具备软超时 (Soft Timeout)、优雅排空 (Drain Buffer) 与防 OOM 熔断机制。
 
         @param timeout_ms 超时时间（毫秒）
         @param delimiter 报文切包定界符（可选）
@@ -188,7 +207,7 @@ class Connection:
         self.touch()
         timeout_s = timeout_ms / 1000.0
 
-        async with self._io_lock:
+        async with self._read_lock:
             # 1. 优先从当前已有的 drain_buffer 中尝试匹配定界符或字节数
             if delimiter and delimiter in self.drain_buffer:
                 idx = self.drain_buffer.index(delimiter) + len(delimiter)
@@ -216,7 +235,9 @@ class Connection:
             while True:
                 remaining_time = end_time - time.perf_counter()
                 if remaining_time <= 0:
-                    # 软超时：不抛错，宽容返回当前累积的残余数据
+                    # 软超时处理：若指定定界符但未凑齐完整帧，返回空载荷且保留半包缓冲
+                    if delimiter:
+                        return self._return_and_record_in(b"", True, self.is_peer_closed, None)
                     partial = bytes(self.drain_buffer)
                     self.drain_buffer.clear()
                     return self._return_and_record_in(partial, True, self.is_peer_closed, None)
@@ -227,6 +248,8 @@ class Connection:
                         timeout=max(remaining_time, 0.001),
                     )
                 except asyncio.TimeoutError:
+                    if delimiter:
+                        return self._return_and_record_in(b"", True, self.is_peer_closed, None)
                     partial = bytes(self.drain_buffer)
                     self.drain_buffer.clear()
                     return self._return_and_record_in(partial, True, self.is_peer_closed, None)
@@ -241,6 +264,20 @@ class Connection:
                     partial = bytes(self.drain_buffer)
                     self.drain_buffer.clear()
                     return self._return_and_record_in(partial, False, True, None)
+
+                # 防 OOM 容量安全检查（遵循 ADR-0005）
+                if len(self.drain_buffer) + len(chunk) > MAX_BUFFER_SIZE:
+                    logger.error(
+                        "Connection %s exceeded MAX_BUFFER_SIZE (%d bytes). "
+                        "Triggering overflow defense.",
+                        self.conn_id,
+                        MAX_BUFFER_SIZE,
+                    )
+                    await self.close()
+
+                    raise BufferOverflowError(
+                        f"Drain buffer overflow: exceeded {MAX_BUFFER_SIZE} bytes limit."
+                    )
 
                 self.drain_buffer.extend(chunk)
                 if self.reader.at_eof():
@@ -264,6 +301,7 @@ class Connection:
                     extracted = bytes(self.drain_buffer)
                     self.drain_buffer.clear()
                     return self._return_and_record_in(extracted, False, self.is_peer_closed, None)
+
 
 
 class ConnectionPool:
@@ -362,7 +400,15 @@ class ConnectionPool:
                 )
 
             conn_id = f"srv_{server_id}_c_{uuid.uuid4().hex[:6]}"
-            conn = Connection(conn_id, host, port, reader, writer, is_server_accepted=True)
+            conn = Connection(
+                conn_id,
+                host,
+                port,
+                reader,
+                writer,
+                is_server_accepted=True,
+                server_id=server_id,
+            )
             self._connections[conn_id] = conn
             logger.info("Inbound connection registered: %s from %s:%d", conn_id, host, port)
             return conn
@@ -395,14 +441,19 @@ class ConnectionPool:
             return conn
         return None
 
-    def list_connections(self) -> List[ConnectionInfo]:
+    def list_connections(self, server_id: Optional[str] = None) -> List[ConnectionInfo]:
         """
-        获取当前所有受管连接的视图快照列表。
+        获取当前所有受管连接的视图快照列表，支持按 Mock Server ID 过滤。
 
+        @param server_id 可选的 Mock Server 全局唯一标识符
         @return ConnectionInfo 列表
         """
         self._prune_inactive()
-        return [c.to_info() for c in self._connections.values()]
+        conns = list(self._connections.values())
+        if server_id is not None:
+            conns = [c for c in conns if c.server_id == server_id]
+        return [c.to_info() for c in conns]
+
 
     def _prune_inactive(self) -> None:
         """清理已自然关闭的失效连接。"""
@@ -510,6 +561,7 @@ class ConnectionPool:
                 await writer.wait_closed()
 
         try:
+            validate_bind_host(host, config=self.config)
             server = await asyncio.start_server(_client_connected_cb, host=host, port=port)
             # 获取实际绑定的端口
             assigned_port = server.sockets[0].getsockname()[1]

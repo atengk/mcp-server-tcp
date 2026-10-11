@@ -100,13 +100,25 @@ async def tcp_port_scan(
     @param timeout_ms 单个端口探测超时时间（毫秒，默认 1000）
     @return 扫描结果汇总 PortScanResult
     @throws SSRFSecurityError 若目标命中 SSRF 防御黑名单
+    @throws ValueError 若端口列表超过 128 个上限
     """
+    if len(ports) > 128:
+        raise ValueError(
+            f"Port scan list exceeds maximum limit of 128 ports (requested {len(ports)})."
+        )
+
     # 1. 前置安全校验目标主机（使用首个合法端口或默认探测）
     if ports:
         await validate_target(host, ports[0])
 
-    # 2. 并发探测所有指定端口（复用前置校验，跳过单次重复 DNS 查询）
-    tasks = [tcp_ping_port(host, p, timeout_ms=timeout_ms, skip_validation=True) for p in ports]
+    # 2. 并发探测所有指定端口（使用信号量限制最大并发为 32，复用前置校验）
+    semaphore = asyncio.Semaphore(32)
+
+    async def _scan_single(p: int) -> PingResult:
+        async with semaphore:
+            return await tcp_ping_port(host, p, timeout_ms=timeout_ms, skip_validation=True)
+
+    tasks = [_scan_single(p) for p in ports]
     scan_results = await asyncio.gather(*tasks)
 
     results: List[PortScanItem] = []

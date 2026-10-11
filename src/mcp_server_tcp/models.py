@@ -78,6 +78,8 @@ class ConnectionInfo(TypedDict):
     idle_seconds: float
     unread_bytes: int
     is_active: bool
+    server_id: Optional[str]
+    is_server_accepted: bool
 
 
 class SendResult(TypedDict):

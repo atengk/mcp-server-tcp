@@ -104,3 +104,49 @@ async def validate_target(
     except socket.gaierror:
         # DNS 解析失败留给底层连接逻辑抛出网络异常
         pass
+
+
+def validate_bind_host(
+    host: str,
+    config: Optional[ServerConfig] = None,
+) -> None:
+    """
+    核验 Mock Server 本地监听绑定地址的安全性。
+
+    @param host 待绑定的主机名或 IP
+    @param config 运行时配置实例（若为空则实时从环境变量加载）
+    @throws SSRFSecurityError 当绑定地址违反安全策略时抛出
+    """
+    cfg = config or ServerConfig.from_env()
+    cleaned = host.strip().lower()
+    if cleaned in ("localhost", "127.0.0.1", "::1"):
+        return
+
+    try:
+        ip_obj = ipaddress.ip_address(cleaned)
+    except ValueError:
+        ip_obj = None
+
+    if ip_obj:
+        if ip_obj.is_loopback:
+            return
+        for network in METADATA_NETWORKS:
+            if ip_obj in network:
+                raise SSRFSecurityError(
+                    f"Binding to cloud metadata IP {ip_obj} is forbidden."
+                )
+
+    if not cfg.allow_private_networks:
+        logger.warning(
+            "Blocked binding to non-loopback host %s due to private network policy",
+            host,
+        )
+        raise SSRFSecurityError(
+            f"Binding Mock Server to non-loopback host '{host}' is forbidden by security policy."
+        )
+
+    logger.warning(
+        "Mock Server is binding to non-loopback host '%s'. Ensure network exposure is intended.",
+        host,
+    )
+

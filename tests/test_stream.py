@@ -105,11 +105,25 @@ async def test_stream_soft_timeout() -> None:
 
     try:
         conn = await pool.connect("127.0.0.1", port)
-        # 请求带 \n 的定界符，但设置极短超时 200ms
+        # 1. 请求带 \n 的定界符，但设置极短超时 200ms
+        # 未见定界符，保全半包，返回空字符串与 timed_out=True
         recv_res = await pool.recv_text(conn.conn_id, timeout_ms=200, delimiter="\n")
+
+
         assert recv_res["timed_out"] is True
-        assert recv_res["text"] == "PARTIAL_DATA"
+        assert recv_res["text"] == ""
+        assert recv_res["bytes_read"] == 0
         assert recv_res["closed"] is False
+
+        # 2. 服务端补齐剩余带有 \n 的后缀报文并发送
+        server_writers[0].write(b"_APPENDED\n")
+        await server_writers[0].drain()
+
+        # 3. 再次读取同一定界符：无缝拼合并成功提取完整报文
+        recv_res2 = await pool.recv_text(conn.conn_id, timeout_ms=1000, delimiter="\n")
+        assert recv_res2["timed_out"] is False
+        assert recv_res2["text"] == "PARTIAL_DATA_APPENDED\n"
+        assert recv_res2["bytes_read"] == len("PARTIAL_DATA_APPENDED\n")
     finally:
         await pool.close_all()
         for w in server_writers:
@@ -117,6 +131,7 @@ async def test_stream_soft_timeout() -> None:
             await w.wait_closed()
         server.close()
         await server.wait_closed()
+
 
 
 @pytest.mark.asyncio

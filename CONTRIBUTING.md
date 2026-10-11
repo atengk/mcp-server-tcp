@@ -51,10 +51,11 @@
 ### 🛡️ 本地 Git 提交钩子守门 (Git Hooks)
 
 本项目通过 Git 原生钩子 [`.githooks/commit-msg`](./.githooks/commit-msg) 在本地提交阶段实时校验信息格式，零外部依赖（无需安装 Node.js、Husky 或 Python 环境）：
-- **一键激活**：运行 `bash scripts/setup.sh` 会自动激活；或在仓库根目录下手动执行：
+- **一键激活**：在仓库根目录下执行如下命令即可激活钩子：
   ```bash
   git config core.hooksPath .githooks
   ```
+
 - **智能放行**：自动放行分支合并 (`Merge branch...`)、代码回退 (`Revert "..."`) 以及变基临时提交 (`fixup!` / `squash!`)；
 - **错误引导**：若提交信息不符合规范，钩子将中断提交、高亮输出格式诊断，并引导使用 `commit.sh` 快速组装。
 
@@ -178,7 +179,7 @@ bash scripts/release.sh v1.0.0 -y
 - 自动提取自上一版本以来的全部提交与 PR，由 `git-cliff` 关联 PR 链接与新贡献者致谢，格式化为发布日志；
 - 自动创建 GitHub Release 并挂载发布内容；
 - 将打包产物与 `checksums.txt` 挂载至附件（若配置了构建步骤）；
-- **生态分发与镜像解耦**：若需自动分发至 Maven Central / npm / PyPI / Crates.io 等包仓库或构建多架构 Docker 镜像，可直接选用模版库 [`.github/workflow-templates/`](./.github/workflow-templates/) 中对应的 `publish.yml` 与 `docker.yml` 独立流水线。
+- **自动发布与镜像构建**：Release 成功后，将自动级联触发 [`.github/workflows/publish.yml`](./.github/workflows/publish.yml) 发布至 PyPI，并触发 [`.github/workflows/docker.yml`](./.github/workflows/docker.yml) 构建多架构容器镜像发布至 GitHub Packages (GHCR)。
 
 > 💡 **安全校验和 (SHA-256 Checksums) 验证指引**：
 > 下游用户或测试者下载产物与 `checksums.txt` 后，可在终端通过原生命令一键验证文件完整性：
@@ -188,14 +189,9 @@ bash scripts/release.sh v1.0.0 -y
 
 ### 中心仓库发布凭据 (Secrets) 参考
 
-如需发布至官方包管理仓库，请在仓库的 **Settings -> Secrets and variables -> Actions** 中配置对应凭证：
+本项目发布流程采用现代化安全凭据管理：
 
-- **npm**: 推荐配置 [npm Trusted Publishing (OIDC)](https://docs.npmjs.com/trusted-publishers)，或配置 `NPM_TOKEN`；
-- **Maven Central**: 推荐使用现代化 Sonatype Central Portal，配置 `CENTRAL_USERNAME` 与 `CENTRAL_PASSWORD`（或传统 OSSRH 凭据），以及 `MAVEN_GPG_PRIVATE_KEY` 与 `MAVEN_GPG_PASSPHRASE`；
-- **PyPI**: 推荐使用官方 [PyPI Trusted Publisher (OIDC)](https://docs.pypi.org/trusted-publishers/)，免配静态密钥；
-- **Docker 镜像**:
-  - **GHCR (推荐)**: 默认直接使用系统内置 `GITHUB_TOKEN`，零 Secret 配置；
-  - **Docker Hub**: 配置 `DOCKERHUB_USERNAME` 与 `DOCKERHUB_TOKEN`；
-- **Go 二进制工具 (GoReleaser)**: 默认直接使用系统内置 `GITHUB_TOKEN` 上传附件至 Release，零 Secret 配置；
-- **GitHub Pages (前端/文档)**: 默认使用官方工作流部署，仅需在仓库 **Settings -> Pages -> Build and deployment -> Source** 切换为 **GitHub Actions** 即可。
+- **PyPI**: 推荐使用官方 [PyPI Trusted Publisher (OIDC)](https://docs.pypi.org/trusted-publishers/)，通过环境免密钥直接认证发布；
+- **GHCR Docker 镜像**: 默认直接使用 Actions 内置 `GITHUB_TOKEN`，零外部 Secret 配置。
+
 
