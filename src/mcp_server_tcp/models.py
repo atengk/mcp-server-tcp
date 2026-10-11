@@ -154,6 +154,3 @@ class TrafficDumpResult(TypedDict):
     conn_id: str
     total_records: int
     records: List[TrafficRecord]
-
-
-

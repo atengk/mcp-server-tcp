@@ -25,20 +25,21 @@ from mcp_server_tcp.models import (
     StopServerResult,
     TrafficDumpResult,
 )
-
 from mcp_server_tcp.pool import ConnectionPool
 from mcp_server_tcp.probe import (
     tcp_ping_port as _tcp_ping_port,
-
+)
+from mcp_server_tcp.probe import (
     tcp_port_scan as _tcp_port_scan,
+)
+from mcp_server_tcp.probe import (
     tcp_send_once as _tcp_send_once,
 )
 
-
 mcp = MCPServer("mcp-server-tcp")
 
-# 全局受管连接池单例（遵循 ADR-0001 混合连接池规范）
-pool = ConnectionPool(max_connections=10, idle_timeout_s=300.0)
+# 全局受管连接池单例（遵循 ADR-0001 混合连接池与 ADR-0003 运行时配置规范）
+pool = ConnectionPool()
 
 
 @mcp.tool()
@@ -308,6 +309,3 @@ def get_connection_traffic_resource(conn_id: str) -> str:
     """
     dump = pool.dump_traffic(conn_id=conn_id)
     return json.dumps(dump, ensure_ascii=False, indent=2)
-
-
-

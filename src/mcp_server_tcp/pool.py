@@ -12,6 +12,7 @@ import uuid
 from typing import Dict, List, Optional
 
 from mcp_server_tcp.audit import TrafficRingBuffer
+from mcp_server_tcp.config import ServerConfig
 from mcp_server_tcp.models import (
     BroadcastResult,
     ConnectionInfo,
@@ -22,9 +23,7 @@ from mcp_server_tcp.models import (
     StopServerResult,
     TrafficDumpResult,
 )
-from mcp_server_tcp.security import SSRFSecurityError, validate_target
-
-
+from mcp_server_tcp.security import validate_target
 
 logger = logging.getLogger("mcp_server_tcp.pool")
 
@@ -80,7 +79,6 @@ class Connection:
         # 遵循 CONTEXT.md 的内存环形流量审计缓冲区
         self.traffic_buffer = TrafficRingBuffer(capacity=100)
         self._io_lock = asyncio.Lock()
-
 
     @property
     def is_active(self) -> bool:
@@ -268,8 +266,6 @@ class Connection:
                     return self._return_and_record_in(extracted, False, self.is_peer_closed, None)
 
 
-
-
 class ConnectionPool:
     """
     集中式连接池管理器，管理活跃连接注册表、空闲回收协程与配额保护。
@@ -277,25 +273,31 @@ class ConnectionPool:
 
     def __init__(
         self,
-        max_connections: int = 10,
-        idle_timeout_s: float = 300.0,
+        config: Optional[ServerConfig] = None,
+        max_connections: Optional[int] = None,
+        idle_timeout_s: Optional[float] = None,
         reaper_interval_s: float = 10.0,
     ) -> None:
         """
         初始化连接池。
 
-        @param max_connections 最大并发连接数配额
-        @param idle_timeout_s 空闲超时阈值（秒，默认 300 秒/5分钟）
+        @param config 运行时核心配置实例（若为空则自动从环境变量加载）
+        @param max_connections 最大并发连接数配额（若显式指定则覆盖 config）
+        @param idle_timeout_s 空闲超时阈值（若显式指定则覆盖 config）
         @param reaper_interval_s 定期回收协程轮询间隔（秒）
         """
-        self.max_connections = max_connections
-        self.idle_timeout_s = idle_timeout_s
+        self.config = config or ServerConfig.from_env()
+        self.max_connections = (
+            max_connections if max_connections is not None else self.config.max_connections
+        )
+        self.idle_timeout_s = (
+            idle_timeout_s if idle_timeout_s is not None else self.config.idle_timeout_seconds
+        )
         self.reaper_interval_s = reaper_interval_s
         self._connections: Dict[str, Connection] = {}
         self._servers: Dict[str, asyncio.Server] = {}
         self._reaper_task: Optional[asyncio.Task[None]] = None
         self._lock = asyncio.Lock()
-
 
     async def connect(
         self,
@@ -313,7 +315,7 @@ class ConnectionPool:
         @throws SSRFSecurityError 若触发 SSRF 拦截
         @throws MaxConnectionsReachedError 若连接数已达上限
         """
-        await validate_target(host, port)
+        await validate_target(host, port, config=self.config)
 
         async with self._lock:
             self._prune_inactive()
@@ -457,14 +459,17 @@ class ConnectionPool:
             self._reaper_task = None
 
         async with self._lock:
-            for srv_id, srv in list(self._servers.items()):
-                srv.close()
-                await srv.wait_closed()
-            self._servers.clear()
-
             for conn in list(self._connections.values()):
                 await conn.close()
             self._connections.clear()
+
+            for srv_id, srv in list(self._servers.items()):
+                srv.close()
+                try:
+                    await asyncio.wait_for(srv.wait_closed(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    pass
+            self._servers.clear()
 
     async def start_server(
         self,
@@ -546,11 +551,7 @@ class ConnectionPool:
                     "message": f"Server {server_id} not found or already stopped.",
                 }
 
-            # 1. 停止监听接收新连接
-            server.close()
-            await server.wait_closed()
-
-            # 2. 级联断开所有该服务端接受的客户端
+            # 1. 级联断开所有该服务端接受的客户端（必须先关闭 client sockets，释放底层 handle）
             closed_count = 0
             prefix = f"srv_{server_id}_"
             for cid in list(self._connections.keys()):
@@ -558,6 +559,13 @@ class ConnectionPool:
                     conn = self._connections.pop(cid)
                     await conn.close()
                     closed_count += 1
+
+            # 2. 停止监听接收新连接并等待完全关闭
+            server.close()
+            try:
+                await asyncio.wait_for(server.wait_closed(), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("Mock Server %s wait_closed timed out", server_id)
 
             logger.info(
                 "Mock Server %s stopped. Closed %d attached clients.",
@@ -644,7 +652,6 @@ class ConnectionPool:
             "failed_count": failed_count,
             "error": None,
         }
-
 
     async def send_text(
         self,
@@ -810,4 +817,3 @@ class ConnectionPool:
             "total_records": len(records),
             "records": records,
         }
-

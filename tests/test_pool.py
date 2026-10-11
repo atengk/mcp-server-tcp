@@ -6,6 +6,7 @@
 """
 
 import asyncio
+
 import pytest
 
 from mcp_server_tcp.pool import ConnectionPool, MaxConnectionsReachedError
@@ -53,17 +54,17 @@ async def test_pool_connect_and_disconnect() -> None:
         await server.wait_closed()
 
 
-
 @pytest.mark.asyncio
 async def test_pool_max_connections_limit() -> None:
     """验证超过最大连接数配额时抛出 MaxConnectionsReachedError。"""
-    server = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+    server_writers = []
+    server = await asyncio.start_server(lambda r, w: server_writers.append(w), "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     pool = ConnectionPool(max_connections=2, idle_timeout_s=60.0)
 
     try:
         conn1 = await pool.connect("127.0.0.1", port, timeout_ms=1000)
-        conn2 = await pool.connect("127.0.0.1", port, timeout_ms=1000)
+        await pool.connect("127.0.0.1", port, timeout_ms=1000)
         assert len(pool.list_connections()) == 2
 
         with pytest.raises(MaxConnectionsReachedError, match="Max connections"):
@@ -76,6 +77,8 @@ async def test_pool_max_connections_limit() -> None:
         assert len(pool.list_connections()) == 2
     finally:
         await pool.close_all()
+        for w in server_writers:
+            w.close()
         server.close()
         await server.wait_closed()
 
@@ -83,14 +86,15 @@ async def test_pool_max_connections_limit() -> None:
 @pytest.mark.asyncio
 async def test_pool_idle_reaper() -> None:
     """验证后台协程自动回收超期未活动连接。"""
-    server = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+    server_writers = []
+    server = await asyncio.start_server(lambda r, w: server_writers.append(w), "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     # 设置极短空闲超时 0.2 秒，并在 0.1 秒轮询一次
     pool = ConnectionPool(max_connections=5, idle_timeout_s=0.2, reaper_interval_s=0.1)
 
     try:
         await pool.start_reaper()
-        conn = await pool.connect("127.0.0.1", port, timeout_ms=1000)
+        await pool.connect("127.0.0.1", port, timeout_ms=1000)
         assert len(pool.list_connections()) == 1
 
         # 等待超过 0.3 秒，应被自动回收
@@ -98,6 +102,8 @@ async def test_pool_idle_reaper() -> None:
         assert len(pool.list_connections()) == 0
     finally:
         await pool.close_all()
+        for w in server_writers:
+            w.close()
         server.close()
         await server.wait_closed()
 
@@ -118,7 +124,8 @@ async def test_server_connection_tools() -> None:
     """验证暴露给 MCP Client 的 tcp_connect, tcp_disconnect, tcp_list_connections 工具。"""
     from mcp_server_tcp.server import tcp_connect, tcp_disconnect, tcp_list_connections
 
-    server = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+    server_writers = []
+    server = await asyncio.start_server(lambda r, w: server_writers.append(w), "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
 
     try:
@@ -146,6 +153,7 @@ async def test_server_connection_tools() -> None:
         dis_res_again = await tcp_disconnect(conn_id)
         assert dis_res_again["disconnected"] is False
     finally:
+        for w in server_writers:
+            w.close()
         server.close()
         await server.wait_closed()
-

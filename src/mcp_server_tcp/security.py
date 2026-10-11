@@ -9,14 +9,25 @@ import asyncio
 import ipaddress
 import logging
 import socket
-from typing import List
+from typing import List, Optional
+
+from mcp_server_tcp.config import ServerConfig
 
 logger = logging.getLogger("mcp_server_tcp.security")
 
-# 云厂商元数据以及常见危险敏感 IP 网段
-BLOCKED_NETWORKS: List[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
+# 云厂商元数据服务（任何情况下均绝对强制拦截）
+METADATA_NETWORKS: List[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
     ipaddress.ip_network("169.254.169.254/32"),  # AWS/GCP/Azure/OpenStack 元数据服务
     ipaddress.ip_network("100.100.100.200/32"),  # 阿里云元数据服务
+]
+
+# RFC 1918 私有内网与回环网段（当配置不允许私有网络时拦截）
+PRIVATE_NETWORKS: List[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
+    ipaddress.ip_network("127.0.0.0/8"),  # IPv4 回环
+    ipaddress.ip_network("10.0.0.0/8"),  # 私有 A 类
+    ipaddress.ip_network("172.16.0.0/12"),  # 私有 B 类
+    ipaddress.ip_network("192.168.0.0/16"),  # 私有 C 类
+    ipaddress.ip_network("::1/128"),  # IPv6 回环
 ]
 
 
@@ -26,29 +37,57 @@ class SSRFSecurityError(ValueError):
     pass
 
 
-async def validate_target(host: str, port: int) -> None:
+def _check_ip_blocked(
+    ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    allow_private: bool,
+) -> None:
+    """内部核验单个 IP 是否被封禁。"""
+    # 1. 检查云元数据黑名单（绝对拦截）
+    for network in METADATA_NETWORKS:
+        if ip_obj in network:
+            logger.warning(
+                "Blocked connection to cloud metadata IP %s (matched %s)", ip_obj, network
+            )
+            raise SSRFSecurityError(
+                f"Target IP {ip_obj} is blocked by cloud metadata SSRF defense policy."
+            )
+
+    # 2. 若关闭了私有网段访问权限，检查是否命中私有网段
+    if not allow_private:
+        for network in PRIVATE_NETWORKS:
+            if ip_obj in network:
+                logger.warning(
+                    "Blocked connection to private network IP %s (matched %s)", ip_obj, network
+                )
+                raise SSRFSecurityError(
+                    f"Target IP {ip_obj} is a private network address and "
+                    "blocked by security policy."
+                )
+
+
+async def validate_target(
+    host: str,
+    port: int,
+    config: Optional[ServerConfig] = None,
+) -> None:
     """
     异步校验目标主机与端口的合法性，拦截 SSRF 风险目标。
 
     @param host 目标主机域名或 IP
     @param port 目标 TCP 端口 (1-65535)
+    @param config 运行时配置实例（若为空则实时从环境变量加载）
     @throws SSRFSecurityError 当目标主机命中黑名单时抛出
     @throws ValueError 当端口范围非法时抛出
     """
     if not (1 <= port <= 65535):
         raise ValueError(f"Port out of range (1-65535): {port}")
 
+    cfg = config or ServerConfig.from_env()
+
     # 1. 尝试直接解析为 IP 地址进行黑名单匹配
     try:
         ip_obj = ipaddress.ip_address(host)
-        for network in BLOCKED_NETWORKS:
-            if ip_obj in network:
-                logger.warning(
-                    "Blocked connection to dangerous IP %s (matched %s)",
-                    host,
-                    network,
-                )
-                raise SSRFSecurityError(f"Target IP {host} is blocked by SSRF defense policy.")
+        _check_ip_blocked(ip_obj, allow_private=cfg.allow_private_networks)
         return
     except ValueError:
         pass
@@ -61,17 +100,7 @@ async def validate_target(host: str, port: int) -> None:
             sockaddr = entry[4]
             ip_str = sockaddr[0]
             ip_obj = ipaddress.ip_address(ip_str)
-            for network in BLOCKED_NETWORKS:
-                if ip_obj in network:
-                    logger.warning(
-                        "Blocked host %s resolved to dangerous IP %s (matched %s)",
-                        host,
-                        ip_str,
-                        network,
-                    )
-                    raise SSRFSecurityError(
-                        f"Resolved IP {ip_str} for host '{host}' is blocked by SSRF defense policy."
-                    )
+            _check_ip_blocked(ip_obj, allow_private=cfg.allow_private_networks)
     except socket.gaierror:
         # DNS 解析失败留给底层连接逻辑抛出网络异常
         pass

@@ -6,6 +6,7 @@
 """
 
 import asyncio
+
 import pytest
 
 from mcp_server_tcp.pool import ConnectionPool
@@ -198,4 +199,3 @@ async def test_server_stream_tools() -> None:
             w.close()
         server.close()
         await server.wait_closed()
-

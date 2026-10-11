@@ -90,6 +90,21 @@ docker run -i --rm ghcr.io/atengk/mcp-server-tcp:latest
 
 ---
 
+## ⚙️ 运行时环境变量配置 (Runtime Configuration)
+
+服务端支持通过系统环境变量进行无代码入侵式参数调优（遵循 [ADR-0003](./docs/adr/0003-runtime-configuration-and-security-posture.md)）：
+
+| 环境变量名称 | 默认值 | 作用说明 |
+| :--- | :--- | :--- |
+| `MCP_TCP_MAX_CONNECTIONS` | `10` | 连接池最大允许的并发连接数配额上限 |
+| `MCP_TCP_IDLE_TIMEOUT_SECONDS` | `300.0` | 连接空闲自愈阈值（秒），超过此时间未活动的连接将被后台协程自动回收 |
+| `MCP_TCP_ALLOW_PRIVATE_NETWORKS` | `true` | 是否允许连接本地回环（`127.0.0.1`）与私有网段（RFC 1918）。企业安全受限环境可置为 `false` 一键拦截 |
+
+> 🔒 **强制安全防线**：无论如何配置，公有云敏感元数据端点（AWS/GCP/Azure `169.254.169.254`、阿里云 `100.100.100.200` 等）均被绝对硬性阻断，保障宿主网络免受 SSRF 渗透。
+
+
+---
+
 ## 💻 本地开发与测试
 
 ```bash
