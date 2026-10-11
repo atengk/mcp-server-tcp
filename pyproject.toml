@@ -4,7 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-server-tcp"
-version = "1.0.0"
+version = "1.1.0"
+
 description = "A versatile TCP client/server proxy MCP server for LLMs"
 
 readme = "README.md"

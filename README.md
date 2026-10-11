@@ -122,7 +122,52 @@ docker run -i --rm ghcr.io/atengk/mcp-server-tcp:latest
 
 ---
 
+## 💡 常用提示词示例 (Prompt Examples)
+
+在配置好 MCP 客户端后，你可以直接通过日常自然语言向大模型下达指令。以下覆盖 4 类典型业务场景：
+
+### 1. 主动连接外部目标服务（出站客户端）
+
+> **用户提问**：
+> “帮我连接 `127.0.0.1:6379` 测试 Redis 是否连通，发送 `PING\r\n` 并读取回包确认。”
+> 
+> *👉 AI 将自动调度：`tcp_connect` -> `tcp_send_text(..., append_crlf=True)` -> `tcp_recv_text(..., delimiter="\r\n")`*
+
+> **用户提问**：
+> “向 `192.168.1.50:8080` 发送单次 HTTP 请求探测 `GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n`，看服务端返回什么状态码。”
+> 
+> *👉 AI 将自动调度：`tcp_send_once`（短连接自动建连、发送、接收与关闭）*
+
+### 2. IoT 工业设备与私有二进制协议（Hex 报文）
+
+> **用户提问**：
+> “连接目标 PLC 设备 `192.168.1.200:502`，发送 Modbus 读取保持寄存器报文 `01 03 00 00 00 02 C4 0B`，并将返回的 Hex 字节流解码分析。”
+> 
+> *👉 AI 将自动调度：`tcp_connect` -> `tcp_send_hex` -> `tcp_recv_hex` -> 结合领域知识解析 Hex 字节*
+
+### 3. 网络探针与端口排障
+
+> **用户提问**：
+> “排查目标主机 `192.168.1.1` 的 TCP 握手时延，并并发扫描常见端口 `[22, 80, 443, 3306, 6379, 8080]`，列出开放状态。”
+> 
+> *👉 AI 将自动调度：`tcp_ping_port` 测试握手延迟 -> `tcp_port_scan` 批量平滑扫描*
+
+### 4. 本地仿真与设备联调（Mock Server）
+
+> **用户提问**：
+> “在本地启动一个 TCP Mock 服务端监听 `8888` 端口，查看是否有外部客户端连入；一旦收到外部数据，向该客户端回复 `OK\r\n`。”
+> 
+> *👉 AI 将自动调度：`tcp_start_server` 开启监听 -> `tcp_list_connections(server_id=...)` 探查入站客户端 -> `tcp_recv_text` / `tcp_send_text` 交互响应*
+
+> **用户提问**：
+> “调出当前连接最近的 20 条通信审计日志，分析刚才数据交互的收发时序与报文快照。”
+> 
+> *👉 AI 将自动调度：`tcp_dump_traffic`（或读取 MCP 资源 `tcp://connection/{conn_id}/traffic`）回溯 Traffic Ring Buffer 记录*
+
+---
+
 ## ⚙️ 运行时环境变量配置 (Runtime Configuration)
+
 
 服务端支持通过系统环境变量进行无代码入侵式参数调优（遵循 [ADR-0003](./docs/adr/0003-runtime-configuration-and-security-posture.md)）：
 
