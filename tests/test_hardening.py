@@ -44,7 +44,6 @@ async def test_full_duplex_concurrent_send_and_recv() -> None:
         )
         await asyncio.sleep(0.05)  # 确保 recv 已经获取 _read_lock
 
-
         # 2. 并发调用 send_text，应立即完成（无需等待 recv 结束）
         start_send = asyncio.get_running_loop().time()
         send_res = await pool.send_text(conn.conn_id, "CLIENT_HELLO\n")

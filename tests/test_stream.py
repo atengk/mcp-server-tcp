@@ -109,7 +109,6 @@ async def test_stream_soft_timeout() -> None:
         # 未见定界符，保全半包，返回空字符串与 timed_out=True
         recv_res = await pool.recv_text(conn.conn_id, timeout_ms=200, delimiter="\n")
 
-
         assert recv_res["timed_out"] is True
         assert recv_res["text"] == ""
         assert recv_res["bytes_read"] == 0
@@ -131,7 +130,6 @@ async def test_stream_soft_timeout() -> None:
             await w.wait_closed()
         server.close()
         await server.wait_closed()
-
 
 
 @pytest.mark.asyncio

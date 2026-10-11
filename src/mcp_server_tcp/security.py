@@ -132,9 +132,7 @@ def validate_bind_host(
             return
         for network in METADATA_NETWORKS:
             if ip_obj in network:
-                raise SSRFSecurityError(
-                    f"Binding to cloud metadata IP {ip_obj} is forbidden."
-                )
+                raise SSRFSecurityError(f"Binding to cloud metadata IP {ip_obj} is forbidden.")
 
     if not cfg.allow_private_networks:
         logger.warning(
@@ -149,4 +147,3 @@ def validate_bind_host(
         "Mock Server is binding to non-loopback host '%s'. Ensure network exposure is intended.",
         host,
     )
-

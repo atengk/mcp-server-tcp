@@ -8,7 +8,6 @@ TCP MCP Server 入口模块定义。
 __version__ = "1.1.0"
 
 
-
 def main() -> None:
     """服务主入口点。"""
     from mcp_server_tcp.server import mcp

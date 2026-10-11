@@ -170,8 +170,6 @@ def tcp_list_connections(
     return pool.list_connections(server_id=server_id)
 
 
-
-
 @mcp.tool()
 async def tcp_send_text(
     conn_id: str,

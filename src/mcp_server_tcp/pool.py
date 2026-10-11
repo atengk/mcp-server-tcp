@@ -51,7 +51,6 @@ class BufferOverflowError(RuntimeError):
     pass
 
 
-
 class Connection:
     """
     受管 TCP 长连接抽象，封装套接字读写器、唯一标识符与生命周期状态。
@@ -303,7 +302,6 @@ class Connection:
                     return self._return_and_record_in(extracted, False, self.is_peer_closed, None)
 
 
-
 class ConnectionPool:
     """
     集中式连接池管理器，管理活跃连接注册表、空闲回收协程与配额保护。
@@ -453,7 +451,6 @@ class ConnectionPool:
         if server_id is not None:
             conns = [c for c in conns if c.server_id == server_id]
         return [c.to_info() for c in conns]
-
 
     def _prune_inactive(self) -> None:
         """清理已自然关闭的失效连接。"""
