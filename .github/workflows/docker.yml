@@ -93,7 +93,7 @@ jobs:
       - name: 提取 Docker 镜像元数据 (自动计算 SemVer 标签)
         id: meta
         if: steps.check-tag.outputs.skip != 'true'
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             ghcr.io/${{ env.REPO_LC }}
