@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Dict, List, Optional
 
-from mcp_server_tcp.models import ConnectionInfo
+from mcp_server_tcp.models import ConnectionInfo, RecvHexResult, RecvTextResult, SendResult
 from mcp_server_tcp.security import SSRFSecurityError, validate_target
 
 logger = logging.getLogger("mcp_server_tcp.pool")
@@ -62,13 +62,20 @@ class Connection:
         self.created_at = time.time()
         self.last_active_at = time.time()
         self._is_closed = False
-        # 预留给 ADR-0002 的残余未读内存队列
+        self._peer_closed = False
+        # 遵循 ADR-0002 的残余未读内存队列
         self.drain_buffer = bytearray()
+        self._io_lock = asyncio.Lock()
 
     @property
     def is_active(self) -> bool:
-        """连接是否保持活跃且未关闭。"""
+        """连接是否保持活跃且未物理关闭。"""
         return not self._is_closed and not self.writer.is_closing()
+
+    @property
+    def is_peer_closed(self) -> bool:
+        """对端是否已经发送 FIN/EOF 关闭写通道。"""
+        return self._peer_closed or self.reader.at_eof()
 
     @property
     def idle_seconds(self) -> float:
@@ -92,11 +99,7 @@ class Connection:
 
     def to_info(self) -> ConnectionInfo:
         """转换为只读快照字典视图。"""
-        # 未读缓冲字节数：drain_buffer 长度加上 reader 内部缓冲区长度（如有）
         unread = len(self.drain_buffer)
-        if hasattr(self.reader, "_buffer"):
-            unread += len(self.reader._buffer)  # type: ignore[attr-defined]
-
         return {
             "conn_id": self.conn_id,
             "host": self.host,
@@ -106,6 +109,134 @@ class Connection:
             "unread_bytes": unread,
             "is_active": self.is_active,
         }
+
+    async def send(self, payload: bytes) -> SendResult:
+        """
+        发送原始字节流到对端。
+
+        @param payload 待发送字节数据
+        @return SendResult 发送结果
+        """
+        if not self.is_active:
+            return {
+                "conn_id": self.conn_id,
+                "bytes_sent": 0,
+                "success": False,
+                "error": f"Connection {self.conn_id} is already closed.",
+            }
+
+        async with self._io_lock:
+            try:
+                self.writer.write(payload)
+                await self.writer.drain()
+                self.touch()
+                return {
+                    "conn_id": self.conn_id,
+                    "bytes_sent": len(payload),
+                    "success": True,
+                    "error": None,
+                }
+            except Exception as exc:
+                logger.warning("Send failed on %s: %s", self.conn_id, exc)
+                return {
+                    "conn_id": self.conn_id,
+                    "bytes_sent": 0,
+                    "success": False,
+                    "error": str(exc),
+                }
+
+    async def recv(
+        self,
+        timeout_ms: int = 5000,
+        delimiter: Optional[bytes] = None,
+        max_bytes: Optional[int] = None,
+    ) -> tuple[bytes, bool, bool, Optional[str]]:
+        """
+        底层流式读取，具备软超时 (Soft Timeout) 与优雅排空 (Drain Buffer) 机制。
+
+        @param timeout_ms 超时时间（毫秒）
+        @param delimiter 报文切包定界符（可选）
+        @param max_bytes 最大读取字节数（可选）
+        @return (数据字节, 是否超时 timed_out, 是否对端已关闭 closed, 错误信息 error)
+        """
+        self.touch()
+        timeout_s = timeout_ms / 1000.0
+
+        async with self._io_lock:
+            # 1. 优先从当前已有的 drain_buffer 中尝试匹配定界符或字节数
+            if delimiter and delimiter in self.drain_buffer:
+                idx = self.drain_buffer.index(delimiter) + len(delimiter)
+                extracted = bytes(self.drain_buffer[:idx])
+                del self.drain_buffer[:idx]
+                return extracted, False, self.is_peer_closed, None
+
+            if max_bytes and len(self.drain_buffer) >= max_bytes:
+                extracted = bytes(self.drain_buffer[:max_bytes])
+                del self.drain_buffer[:max_bytes]
+                return extracted, False, self.is_peer_closed, None
+
+            # 若对端已关闭且 drain_buffer 有残余数据，直接取出排空
+            if self.is_peer_closed and self.drain_buffer:
+                extracted = bytes(self.drain_buffer)
+                self.drain_buffer.clear()
+                return extracted, False, True, None
+
+            if self.is_peer_closed and not self.drain_buffer:
+                return b"", False, True, None
+
+            # 2. 启动异步读取循环
+            end_time = time.perf_counter() + timeout_s
+
+            while True:
+                remaining_time = end_time - time.perf_counter()
+                if remaining_time <= 0:
+                    # 软超时：不抛错，宽容返回当前累积的残余数据
+                    partial = bytes(self.drain_buffer)
+                    self.drain_buffer.clear()
+                    return partial, True, self.is_peer_closed, None
+
+                try:
+                    chunk = await asyncio.wait_for(
+                        self.reader.read(4096),
+                        timeout=max(remaining_time, 0.001),
+                    )
+                except asyncio.TimeoutError:
+                    partial = bytes(self.drain_buffer)
+                    self.drain_buffer.clear()
+                    return partial, True, self.is_peer_closed, None
+                except Exception as exc:
+                    return bytes(self.drain_buffer), False, True, str(exc)
+
+                if not chunk:
+                    # 对端发送了 FIN/EOF
+                    self._peer_closed = True
+                    partial = bytes(self.drain_buffer)
+                    self.drain_buffer.clear()
+                    return partial, False, True, None
+
+                self.drain_buffer.extend(chunk)
+                if self.reader.at_eof():
+                    self._peer_closed = True
+
+                # 3. 检查是否达成定界符条件
+                if delimiter and delimiter in self.drain_buffer:
+                    idx = self.drain_buffer.index(delimiter) + len(delimiter)
+                    extracted = bytes(self.drain_buffer[:idx])
+                    del self.drain_buffer[:idx]
+                    return extracted, False, self.is_peer_closed, None
+
+                # 4. 检查是否达成最大字节数条件
+                if max_bytes and len(self.drain_buffer) >= max_bytes:
+                    extracted = bytes(self.drain_buffer[:max_bytes])
+                    del self.drain_buffer[:max_bytes]
+                    return extracted, False, self.is_peer_closed, None
+
+                # 若未指定 delimiter 且未指定 max_bytes，则首个有效分片即返回
+                if not delimiter and not max_bytes:
+                    extracted = bytes(self.drain_buffer)
+                    self.drain_buffer.clear()
+                    return extracted, False, self.is_peer_closed, None
+
 
 
 class ConnectionPool:
@@ -152,21 +283,18 @@ class ConnectionPool:
         await validate_target(host, port)
 
         async with self._lock:
-            # 1. 检查并清理死连接，核验容量配额
             self._prune_inactive()
             if len(self._connections) >= self.max_connections:
                 raise MaxConnectionsReachedError(
                     f"Max connections limit ({self.max_connections}) reached."
                 )
 
-            # 2. 建立底层 TCP 套接字
             timeout_s = timeout_ms / 1000.0
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host, port),
                 timeout=timeout_s,
             )
 
-            # 3. 分配全局唯一标识并登记入池
             conn_id = f"c_{uuid.uuid4().hex[:8]}"
             conn = Connection(conn_id, host, port, reader, writer)
             self._connections[conn_id] = conn
@@ -203,7 +331,6 @@ class ConnectionPool:
             self._connections[conn_id] = conn
             logger.info("Inbound connection registered: %s from %s:%d", conn_id, host, port)
             return conn
-
 
     async def disconnect(self, conn_id: str) -> bool:
         """
@@ -300,3 +427,146 @@ class ConnectionPool:
             for conn in list(self._connections.values()):
                 await conn.close()
             self._connections.clear()
+
+    async def send_text(
+        self,
+        conn_id: str,
+        text: str,
+        append_crlf: bool = False,
+    ) -> SendResult:
+        """
+        发送 UTF-8 文本数据（Text Payload），支持追加 CRLF 行尾符。
+
+        @param conn_id 连接标识
+        @param text 待发送文本
+        @param append_crlf 是否自动追加 \\r\\n
+        @return SendResult 字典
+        """
+        conn = self.get(conn_id)
+        if not conn:
+            return {
+                "conn_id": conn_id,
+                "bytes_sent": 0,
+                "success": False,
+                "error": f"Connection {conn_id} not found or inactive.",
+            }
+
+        payload = text.encode("utf-8")
+        if append_crlf and not payload.endswith(b"\r\n"):
+            payload += b"\r\n"
+        return await conn.send(payload)
+
+    async def send_hex(
+        self,
+        conn_id: str,
+        hex_string: str,
+    ) -> SendResult:
+        """
+        发送十六进制编码的原始二进制字节流（Hex Payload）。
+
+        @param conn_id 连接标识
+        @param hex_string 十六进制字符串（支持包含空格）
+        @return SendResult 字典
+        """
+        conn = self.get(conn_id)
+        if not conn:
+            return {
+                "conn_id": conn_id,
+                "bytes_sent": 0,
+                "success": False,
+                "error": f"Connection {conn_id} not found or inactive.",
+            }
+
+        try:
+            clean_hex = "".join(hex_string.split())
+            payload = bytes.fromhex(clean_hex)
+        except ValueError as exc:
+            return {
+                "conn_id": conn_id,
+                "bytes_sent": 0,
+                "success": False,
+                "error": f"Invalid Hex Payload format: {exc}",
+            }
+
+        return await conn.send(payload)
+
+    async def recv_text(
+        self,
+        conn_id: str,
+        timeout_ms: int = 5000,
+        delimiter: Optional[str] = None,
+    ) -> RecvTextResult:
+        """
+        从连接接收文本数据（Text Payload），支持定界符与软超时宽容返回。
+
+        @param conn_id 连接标识
+        @param timeout_ms 超时毫秒数（默认 5000）
+        @param delimiter 定界符字符串（如 '\\r\\n' 或 '\\n'）
+        @return RecvTextResult 字典
+        """
+        conn = self.get(conn_id)
+        if not conn:
+            return {
+                "conn_id": conn_id,
+                "text": "",
+                "bytes_read": 0,
+                "timed_out": False,
+                "closed": True,
+                "error": f"Connection {conn_id} not found or inactive.",
+            }
+
+        delimiter_bytes = delimiter.encode("utf-8") if delimiter else None
+        data, timed_out, closed, error = await conn.recv(
+            timeout_ms=timeout_ms,
+            delimiter=delimiter_bytes,
+        )
+
+        text_val = data.decode("utf-8", errors="replace")
+        return {
+            "conn_id": conn_id,
+            "text": text_val,
+            "bytes_read": len(data),
+            "timed_out": timed_out,
+            "closed": closed,
+            "error": error,
+        }
+
+    async def recv_hex(
+        self,
+        conn_id: str,
+        timeout_ms: int = 5000,
+        max_bytes: Optional[int] = None,
+    ) -> RecvHexResult:
+        """
+        从连接接收十六进制原始字节流（Hex Payload），支持限制最大字节数与软超时。
+
+        @param conn_id 连接标识
+        @param timeout_ms 超时毫秒数（默认 5000）
+        @param max_bytes 最大接收字节数
+        @return RecvHexResult 字典
+        """
+        conn = self.get(conn_id)
+        if not conn:
+            return {
+                "conn_id": conn_id,
+                "hex_string": "",
+                "bytes_read": 0,
+                "timed_out": False,
+                "closed": True,
+                "error": f"Connection {conn_id} not found or inactive.",
+            }
+
+        data, timed_out, closed, error = await conn.recv(
+            timeout_ms=timeout_ms,
+            max_bytes=max_bytes,
+        )
+
+        hex_val = data.hex(" ")
+        return {
+            "conn_id": conn_id,
+            "hex_string": hex_val,
+            "bytes_read": len(data),
+            "timed_out": timed_out,
+            "closed": closed,
+            "error": error,
+        }

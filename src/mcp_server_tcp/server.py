@@ -5,7 +5,7 @@ MCP 服务端实例定义与工具注册。
 @since 2026-10-11
 """
 
-from typing import List
+from typing import List, Optional
 
 from mcp.server.mcpserver import MCPServer
 
@@ -15,7 +15,10 @@ from mcp_server_tcp.models import (
     DisconnectResult,
     PingResult,
     PortScanResult,
+    RecvHexResult,
+    RecvTextResult,
     SendOnceResult,
+    SendResult,
 )
 from mcp_server_tcp.pool import ConnectionPool
 from mcp_server_tcp.probe import (
@@ -23,6 +26,7 @@ from mcp_server_tcp.probe import (
     tcp_port_scan as _tcp_port_scan,
     tcp_send_once as _tcp_send_once,
 )
+
 
 mcp = MCPServer("mcp-server-tcp")
 
@@ -152,3 +156,70 @@ def tcp_list_connections() -> List[ConnectionInfo]:
     @return 活跃连接的列表，包含 conn_id, host, port, idle_seconds, unread_bytes 等
     """
     return pool.list_connections()
+
+
+@mcp.tool()
+async def tcp_send_text(
+    conn_id: str,
+    text: str,
+    append_crlf: bool = False,
+) -> SendResult:
+    """
+    向指定长连接发送 UTF-8 文本数据（Text Payload），支持可选行尾 CRLF。
+
+    @param conn_id 连接全局唯一标识符
+    @param text 待发送的文本内容
+    @param append_crlf 是否在末尾自动追加 \\r\\n（默认 False）
+    @return SendResult 字典，包含 conn_id, bytes_sent, success, error
+    """
+    return await pool.send_text(conn_id, text, append_crlf=append_crlf)
+
+
+@mcp.tool()
+async def tcp_send_hex(
+    conn_id: str,
+    hex_string: str,
+) -> SendResult:
+    """
+    向指定长连接发送十六进制编码的原始二进制字节流（Hex Payload）。
+
+    @param conn_id 连接全局唯一标识符
+    @param hex_string 十六进制字符串（支持形如 '01 02 03' 或 '010203'）
+    @return SendResult 字典，包含 conn_id, bytes_sent, success, error
+    """
+    return await pool.send_hex(conn_id, hex_string)
+
+
+@mcp.tool()
+async def tcp_recv_text(
+    conn_id: str,
+    timeout_ms: int = 5000,
+    delimiter: Optional[str] = None,
+) -> RecvTextResult:
+    """
+    从指定长连接接收文本数据（Text Payload），具备定界符切包与软超时宽容返回能力。
+
+    @param conn_id 连接全局唯一标识符
+    @param timeout_ms 超时毫秒数（默认 5000）
+    @param delimiter 报文定界符（如 '\\r\\n' 或 '\\n'，可选）
+    @return RecvTextResult 字典，包含 text, bytes_read, timed_out, closed, error
+    """
+    return await pool.recv_text(conn_id, timeout_ms=timeout_ms, delimiter=delimiter)
+
+
+@mcp.tool()
+async def tcp_recv_hex(
+    conn_id: str,
+    timeout_ms: int = 5000,
+    max_bytes: Optional[int] = None,
+) -> RecvHexResult:
+    """
+    从指定长连接接收原始二进制字节并格式化为 Hex Payload，支持限制字节数与软超时。
+
+    @param conn_id 连接全局唯一标识符
+    @param timeout_ms 超时毫秒数（默认 5000）
+    @param max_bytes 最大接收字节数上限（可选）
+    @return RecvHexResult 字典，包含 hex_string, bytes_read, timed_out, closed, error
+    """
+    return await pool.recv_hex(conn_id, timeout_ms=timeout_ms, max_bytes=max_bytes)
+

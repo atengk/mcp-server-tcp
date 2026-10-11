@@ -9,3 +9,7 @@
 ### Domain docs
 
 采用单上下文规范布局：根目录 `CONTEXT.md` 结合 `docs/adr/`，详情查阅 [docs/agents/domain.md](./docs/agents/domain.md)。
+
+### Execution hygiene
+
+后台任务排空、子智能体即用即销及套接字生命周期规范，详情查阅 [docs/agents/execution-hygiene.md](./docs/agents/execution-hygiene.md)。

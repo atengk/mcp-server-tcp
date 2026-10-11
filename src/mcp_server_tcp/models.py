@@ -76,3 +76,35 @@ class ConnectionInfo(TypedDict):
     idle_seconds: float
     unread_bytes: int
     is_active: bool
+
+
+class SendResult(TypedDict):
+    """数据发送操作结果契约。"""
+
+    conn_id: str
+    bytes_sent: int
+    success: bool
+    error: Optional[str]
+
+
+class RecvTextResult(TypedDict):
+    """文本接收操作结果契约（包含软超时与关闭标志）。"""
+
+    conn_id: str
+    text: str
+    bytes_read: int
+    timed_out: bool
+    closed: bool
+    error: Optional[str]
+
+
+class RecvHexResult(TypedDict):
+    """Hex 二进制接收操作结果契约（包含软超时与关闭标志）。"""
+
+    conn_id: str
+    hex_string: str
+    bytes_read: int
+    timed_out: bool
+    closed: bool
+    error: Optional[str]
+
