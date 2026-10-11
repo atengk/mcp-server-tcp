@@ -64,7 +64,7 @@ jobs:
 
       - name: 设置 QEMU 模拟器 (多架构支持)
         if: steps.check-tag.outputs.skip != 'true'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: 设置 Docker Buildx
         if: steps.check-tag.outputs.skip != 'true'
