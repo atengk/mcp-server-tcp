@@ -6,13 +6,21 @@
 """
 
 import asyncio
+import logging
 import time
-from typing import Any, Dict, List
+from typing import List
 
+from mcp_server_tcp.models import PingResult, PortScanItem, PortScanResult, SendOnceResult
 from mcp_server_tcp.security import SSRFSecurityError, validate_target
 
+logger = logging.getLogger("mcp_server_tcp.probe")
+
 __all__ = [
+    "PingResult",
+    "PortScanItem",
+    "PortScanResult",
     "SSRFSecurityError",
+    "SendOnceResult",
     "tcp_ping_port",
     "tcp_port_scan",
     "tcp_send_once",
@@ -23,17 +31,21 @@ async def tcp_ping_port(
     host: str,
     port: int,
     timeout_ms: int = 3000,
-) -> Dict[str, Any]:
+    skip_validation: bool = False,
+) -> PingResult:
     """
     测量到目标主机的 TCP 握手时延与端口可达性。
 
     @param host 目标主机域名或 IP
     @param port 目标 TCP 端口
     @param timeout_ms 超时时间（毫秒，默认 3000）
-    @return 探测结果字典，包含 connected、latency_ms、error 等字段
+    @param skip_validation 是否跳过安全校验（仅供批量扫描已前置校验场景内部使用）
+    @return 探测结果 PingResult
     @throws SSRFSecurityError 若目标命中 SSRF 防御黑名单
     """
-    validate_target(host, port)
+    if not skip_validation:
+        await validate_target(host, port)
+
     timeout_s = timeout_ms / 1000.0
     start_time = time.perf_counter()
 
@@ -45,6 +57,7 @@ async def tcp_ping_port(
         latency_ms = (time.perf_counter() - start_time) * 1000.0
         writer.close()
         await writer.wait_closed()
+        logger.debug("Ping %s:%d success, latency=%.2fms", host, port, latency_ms)
         return {
             "connected": True,
             "host": host,
@@ -53,6 +66,7 @@ async def tcp_ping_port(
             "error": None,
         }
     except asyncio.TimeoutError:
+        logger.debug("Ping %s:%d timed out after %dms", host, port, timeout_ms)
         return {
             "connected": False,
             "host": host,
@@ -61,6 +75,7 @@ async def tcp_ping_port(
             "error": f"Connection timed out after {timeout_ms}ms",
         }
     except Exception as exc:
+        logger.debug("Ping %s:%d failed: %s", host, port, exc)
         return {
             "connected": False,
             "host": host,
@@ -74,20 +89,27 @@ async def tcp_port_scan(
     host: str,
     ports: List[int],
     timeout_ms: int = 1000,
-) -> Dict[str, Any]:
+) -> PortScanResult:
     """
     并发扫描目标主机的指定端口列表。
+
+    前置进行一次全局 SSRF 安全校验，避免对同主机重复进行多轮 DNS 查询。
 
     @param host 目标主机域名或 IP
     @param ports 待扫描的端口列表
     @param timeout_ms 单个端口探测超时时间（毫秒，默认 1000）
-    @return 扫描结果字典，包含 host、results 及 open_ports 汇总
+    @return 扫描结果汇总 PortScanResult
     @throws SSRFSecurityError 若目标命中 SSRF 防御黑名单
     """
-    tasks = [tcp_ping_port(host, p, timeout_ms=timeout_ms) for p in ports]
+    # 1. 前置安全校验目标主机（使用首个合法端口或默认探测）
+    if ports:
+        await validate_target(host, ports[0])
+
+    # 2. 并发探测所有指定端口（复用前置校验，跳过单次重复 DNS 查询）
+    tasks = [tcp_ping_port(host, p, timeout_ms=timeout_ms, skip_validation=True) for p in ports]
     scan_results = await asyncio.gather(*tasks)
 
-    results: List[Dict[str, Any]] = []
+    results: List[PortScanItem] = []
     open_ports: List[int] = []
 
     for res in scan_results:
@@ -104,6 +126,12 @@ async def tcp_port_scan(
             }
         )
 
+    logger.info(
+        "Port scan on %s completed: %d scanned, %d open",
+        host,
+        len(ports),
+        len(open_ports),
+    )
     return {
         "host": host,
         "scanned_count": len(ports),
@@ -118,22 +146,24 @@ async def tcp_send_once(
     data: str,
     encoding: str = "utf-8",
     timeout_ms: int = 5000,
-) -> Dict[str, Any]:
+) -> SendOnceResult:
     """
-    建立短连接、发送单次数据并读取响应，随后立即优雅关闭连接。
+    建立短连接、发送单次负载数据并读取响应，随后立即优雅关闭连接。
+
+    严格适配 Hex Payload 与 Text Payload 双重格式。
 
     @param host 目标主机域名或 IP
     @param port 目标 TCP 端口
-    @param data 待发送数据（文本或 Hex 字符串）
+    @param data 待发送负载（Text Payload 文本或 Hex Payload 十六进制串）
     @param encoding 编码格式，支持 "utf-8" 或 "hex"
     @param timeout_ms 操作整体超时时间（毫秒，默认 5000）
-    @return 通信结果字典，包含 sent_bytes、received_bytes、response_data、error 等
+    @return 通信结果 SendOnceResult
     @throws SSRFSecurityError 若目标命中 SSRF 防御黑名单
     """
-    validate_target(host, port)
+    await validate_target(host, port)
     timeout_s = timeout_ms / 1000.0
 
-    # 1. 序列化请求负载
+    # 1. 序列化请求负载 (Hex Payload 或 Text Payload)
     normalized_encoding = encoding.lower()
     if normalized_encoding == "hex":
         clean_hex = "".join(data.split())
@@ -141,15 +171,14 @@ async def tcp_send_once(
     else:
         payload = data.encode(encoding)
 
-    async def _send_and_recv() -> Dict[str, Any]:
+    async def _send_and_recv() -> SendOnceResult:
+        # 2. 建立短连接通道并发送数据
         reader, writer = await asyncio.open_connection(host, port)
         try:
-            # 2. 发送请求数据并刷入网络
             writer.write(payload)
             await writer.drain()
 
-            # 3. 读取响应（单次短连接读取至 EOF 或缓冲区数据）
-            # 读取最大 65536 字节
+            # 3. 读取响应（单次短连接读取至 EOF 或已就绪缓冲区数据）
             raw_response = await reader.read(65536)
 
             # 4. 格式化响应输出
@@ -158,6 +187,13 @@ async def tcp_send_once(
             else:
                 response_str = raw_response.decode(encoding, errors="replace")
 
+            logger.debug(
+                "tcp_send_once to %s:%d success (sent=%d, recv=%d)",
+                host,
+                port,
+                len(payload),
+                len(raw_response),
+            )
             return {
                 "success": True,
                 "host": host,
@@ -174,6 +210,7 @@ async def tcp_send_once(
     try:
         return await asyncio.wait_for(_send_and_recv(), timeout=timeout_s)
     except asyncio.TimeoutError:
+        logger.warning("tcp_send_once to %s:%d timed out after %dms", host, port, timeout_ms)
         return {
             "success": False,
             "host": host,
@@ -184,6 +221,7 @@ async def tcp_send_once(
             "error": f"Operation timed out after {timeout_ms}ms",
         }
     except Exception as exc:
+        logger.warning("tcp_send_once to %s:%d failed: %s", host, port, exc)
         return {
             "success": False,
             "host": host,
