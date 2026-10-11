@@ -11,8 +11,17 @@ import time
 import uuid
 from typing import Dict, List, Optional
 
-from mcp_server_tcp.models import ConnectionInfo, RecvHexResult, RecvTextResult, SendResult
+from mcp_server_tcp.models import (
+    BroadcastResult,
+    ConnectionInfo,
+    RecvHexResult,
+    RecvTextResult,
+    SendResult,
+    StartServerResult,
+    StopServerResult,
+)
 from mcp_server_tcp.security import SSRFSecurityError, validate_target
+
 
 logger = logging.getLogger("mcp_server_tcp.pool")
 
@@ -261,8 +270,10 @@ class ConnectionPool:
         self.idle_timeout_s = idle_timeout_s
         self.reaper_interval_s = reaper_interval_s
         self._connections: Dict[str, Connection] = {}
+        self._servers: Dict[str, asyncio.Server] = {}
         self._reaper_task: Optional[asyncio.Task[None]] = None
         self._lock = asyncio.Lock()
+
 
     async def connect(
         self,
@@ -414,7 +425,7 @@ class ConnectionPool:
         self._reaper_task = asyncio.create_task(_loop())
 
     async def close_all(self) -> None:
-        """关闭连接池中的所有连接并终止回收协程。"""
+        """关闭连接池中的所有连接、停止所有 Mock Server 并终止回收协程。"""
         if self._reaper_task:
             self._reaper_task.cancel()
             try:
@@ -424,9 +435,194 @@ class ConnectionPool:
             self._reaper_task = None
 
         async with self._lock:
+            for srv_id, srv in list(self._servers.items()):
+                srv.close()
+                await srv.wait_closed()
+            self._servers.clear()
+
             for conn in list(self._connections.values()):
                 await conn.close()
             self._connections.clear()
+
+    async def start_server(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 0,
+    ) -> StartServerResult:
+        """
+        启动动态 Mock Server 监听器，被动接受外部客户端连入并自动分配 conn_id 入池。
+
+        @param host 监听绑定的本地主机或 IP（默认 127.0.0.1）
+        @param port 监听绑定的本地端口（默认 0，系统随机分配空闲端口）
+        @return StartServerResult 启动结果契约
+        """
+        server_id = f"mock_{uuid.uuid4().hex[:6]}"
+
+        async def _client_connected_cb(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+        ) -> None:
+            peer_name = writer.get_extra_info("peername")
+            peer_host = peer_name[0] if peer_name else "unknown"
+            peer_port = peer_name[1] if peer_name else 0
+            try:
+                await self.register_server_connection(
+                    server_id=server_id,
+                    host=peer_host,
+                    port=peer_port,
+                    reader=reader,
+                    writer=writer,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to register inbound client for server %s: %s",
+                    server_id,
+                    exc,
+                )
+                writer.close()
+                await writer.wait_closed()
+
+        try:
+            server = await asyncio.start_server(_client_connected_cb, host=host, port=port)
+            # 获取实际绑定的端口
+            assigned_port = server.sockets[0].getsockname()[1]
+            async with self._lock:
+                self._servers[server_id] = server
+
+            logger.info("Mock Server %s started on %s:%d", server_id, host, assigned_port)
+            return {
+                "server_id": server_id,
+                "host": host,
+                "port": assigned_port,
+                "started": True,
+                "error": None,
+            }
+        except Exception as exc:
+            logger.error("Failed to start Mock Server on %s:%d: %s", host, port, exc)
+            return {
+                "server_id": None,
+                "host": host,
+                "port": port,
+                "started": False,
+                "error": str(exc),
+            }
+
+    async def stop_server(self, server_id: str) -> StopServerResult:
+        """
+        安全停止指定的 Mock Server 并断开所有归属于该服务端的入站客户端连接。
+
+        @param server_id Mock Server 唯一标识
+        @return StopServerResult 停止结果契约
+        """
+        async with self._lock:
+            server = self._servers.pop(server_id, None)
+            if not server:
+                return {
+                    "server_id": server_id,
+                    "stopped": False,
+                    "closed_connections_count": 0,
+                    "message": f"Server {server_id} not found or already stopped.",
+                }
+
+            # 1. 停止监听接收新连接
+            server.close()
+            await server.wait_closed()
+
+            # 2. 级联断开所有该服务端接受的客户端
+            closed_count = 0
+            prefix = f"srv_{server_id}_"
+            for cid in list(self._connections.keys()):
+                if cid.startswith(prefix):
+                    conn = self._connections.pop(cid)
+                    await conn.close()
+                    closed_count += 1
+
+            logger.info(
+                "Mock Server %s stopped. Closed %d attached clients.",
+                server_id,
+                closed_count,
+            )
+            return {
+                "server_id": server_id,
+                "stopped": True,
+                "closed_connections_count": closed_count,
+                "message": f"Server {server_id} successfully stopped.",
+            }
+
+    async def broadcast(
+        self,
+        server_id: str,
+        text: Optional[str] = None,
+        hex_string: Optional[str] = None,
+        append_crlf: bool = False,
+    ) -> BroadcastResult:
+        """
+        向指定 Mock Server 下的所有连入活跃客户端同时多路广播报文。
+
+        @param server_id Mock Server 唯一标识
+        @param text 待广播的文本数据（Text Payload）
+        @param hex_string 待广播的十六进制数据（Hex Payload）
+        @param append_crlf 发送文本时是否自动追加 \\r\\n
+        @return BroadcastResult 广播结果统计
+        """
+        if text is None and hex_string is None:
+            return {
+                "server_id": server_id,
+                "recipients_count": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "error": "Either text or hex_string must be provided.",
+            }
+
+        # 准备数据负载
+        if hex_string is not None:
+            try:
+                clean_hex = "".join(hex_string.split())
+                payload = bytes.fromhex(clean_hex)
+            except ValueError as exc:
+                return {
+                    "server_id": server_id,
+                    "recipients_count": 0,
+                    "success_count": 0,
+                    "failed_count": 0,
+                    "error": f"Invalid Hex Payload format: {exc}",
+                }
+        else:
+            payload = text.encode("utf-8")  # type: ignore[union-attr]
+            if append_crlf and not payload.endswith(b"\r\n"):
+                payload += b"\r\n"
+
+        prefix = f"srv_{server_id}_"
+        # 筛选出属于该 server_id 的活跃客户端
+        target_conns = [
+            conn
+            for cid, conn in self._connections.items()
+            if cid.startswith(prefix) and conn.is_active
+        ]
+
+        if not target_conns:
+            return {
+                "server_id": server_id,
+                "recipients_count": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "error": None,
+            }
+
+        tasks = [conn.send(payload) for conn in target_conns]
+        results = await asyncio.gather(*tasks)
+
+        success_count = sum(1 for r in results if r["success"])
+        failed_count = len(results) - success_count
+
+        return {
+            "server_id": server_id,
+            "recipients_count": len(target_conns),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "error": None,
+        }
+
 
     async def send_text(
         self,

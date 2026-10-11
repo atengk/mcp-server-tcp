@@ -10,6 +10,7 @@ from typing import List, Optional
 from mcp.server.mcpserver import MCPServer
 
 from mcp_server_tcp.models import (
+    BroadcastResult,
     ConnectionInfo,
     ConnectResult,
     DisconnectResult,
@@ -19,10 +20,13 @@ from mcp_server_tcp.models import (
     RecvTextResult,
     SendOnceResult,
     SendResult,
+    StartServerResult,
+    StopServerResult,
 )
 from mcp_server_tcp.pool import ConnectionPool
 from mcp_server_tcp.probe import (
     tcp_ping_port as _tcp_ping_port,
+
     tcp_port_scan as _tcp_port_scan,
     tcp_send_once as _tcp_send_once,
 )
@@ -222,4 +226,57 @@ async def tcp_recv_hex(
     @return RecvHexResult 字典，包含 hex_string, bytes_read, timed_out, closed, error
     """
     return await pool.recv_hex(conn_id, timeout_ms=timeout_ms, max_bytes=max_bytes)
+
+
+@mcp.tool()
+async def tcp_start_server(
+    host: str = "127.0.0.1",
+    port: int = 0,
+) -> StartServerResult:
+    """
+    启动本地 Mock TCP 服务端监听器，被动接受外部客户端连入并统一分配 conn_id。
+
+    @param host 绑定监听的本地地址（默认 127.0.0.1）
+    @param port 绑定监听的本地端口（默认 0，系统随机分配可用端口）
+    @return StartServerResult 字典，包含 server_id, host, port, started, error
+    """
+    return await pool.start_server(host=host, port=port)
+
+
+@mcp.tool()
+async def tcp_stop_server(
+    server_id: str,
+) -> StopServerResult:
+    """
+    安全停止指定的 Mock TCP 服务端监听器，并级联断开所有该服务端接受的客户端连接。
+
+    @param server_id Mock Server 全局唯一标识符
+    @return StopServerResult 字典，包含 server_id, stopped, closed_connections_count, message
+    """
+    return await pool.stop_server(server_id)
+
+
+@mcp.tool()
+async def tcp_broadcast(
+    server_id: str,
+    text: Optional[str] = None,
+    hex_string: Optional[str] = None,
+    append_crlf: bool = False,
+) -> BroadcastResult:
+    """
+    向指定 Mock Server 下的所有连入活跃客户端同时多路广播数据。
+
+    @param server_id Mock Server 全局唯一标识符
+    @param text 待广播的文本数据（Text Payload）
+    @param hex_string 待广播的十六进制二进制数据（Hex Payload）
+    @param append_crlf 广播文本时是否自动追加 \\r\\n（默认 False）
+    @return BroadcastResult 字典，包含 server_id, recipients_count, success_count, failed_count
+    """
+    return await pool.broadcast(
+        server_id=server_id,
+        text=text,
+        hex_string=hex_string,
+        append_crlf=append_crlf,
+    )
+
 

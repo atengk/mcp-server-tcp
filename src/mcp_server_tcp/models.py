@@ -108,3 +108,33 @@ class RecvHexResult(TypedDict):
     closed: bool
     error: Optional[str]
 
+
+class StartServerResult(TypedDict):
+    """启动 Mock Server 结果契约。"""
+
+    server_id: Optional[str]
+    host: str
+    port: int
+    started: bool
+    error: Optional[str]
+
+
+class StopServerResult(TypedDict):
+    """停止 Mock Server 结果契约。"""
+
+    server_id: str
+    stopped: bool
+    closed_connections_count: int
+    message: str
+
+
+class BroadcastResult(TypedDict):
+    """向 Mock Server 附属客户端广播报文操作结果契约。"""
+
+    server_id: str
+    recipients_count: int
+    success_count: int
+    failed_count: int
+    error: Optional[str]
+
+
