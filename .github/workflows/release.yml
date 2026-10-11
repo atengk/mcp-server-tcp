@@ -1,0 +1,159 @@
+# ==============================================================================
+# 工作流：自动化发版与变更日志生成流水线 (GitHub Release)
+# 适用场景：开源工程的通用 GitHub Release 自动化发版、更新日志提取与制品附件挂载
+# 触发通道：
+#   - 网页手动触发 (workflow_dispatch)：在 Actions 界面输入版本号 (如 v1.0.0)，
+#     自动校验语义化格式、主干分支、远端标签唯一性后创建 Git Tag 并推送发版
+#   - 标签推送 (push tags: v*)：本地执行 git tag v1.0.0 && git push origin v1.0.0
+# 核心特性：
+#   - 严格分支与语义化 SemVer 双重防呆校验 (支持正式版与 rc/beta 预发版自动识别)
+#   - 依托 git-cliff 根据 Conventional Commits 提交历史自动提取 CHANGELOG_RELEASE.md
+#   - 智能配置容错：优先匹配根目录 .cliff.toml，缺失时自愈回退至默认规范
+#   - 双模鉴权插槽 (RELEASE_PAT)：支持配置个人访问令牌以突破 GITHUB_TOKEN 防死循环限制，
+#     在网页端发版时可无缝自动级联触发下游生态包发布 (Publish) 与容器构建 (Docker) 流水线
+# ==============================================================================
+
+name: GitHub Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号 (必须以 v 开头，符合 SemVer 规范，如 v1.0.0 或 v1.0.0-rc.1)'
+        required: true
+        type: string
+
+# 并发控制：同一时间全局仅允许一个发版任务运行，禁止取消正在执行的任务以确保产物完整性与原子性
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  github-release:
+    name: 自动发版与产物挂载
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 需要推送 Git Tag 与创建 GitHub Release 权限
+    outputs:
+      tag_name: ${{ steps.release-meta.outputs.tag_name }}
+      raw_version: ${{ steps.release-meta.outputs.raw_version }}
+      is_prerelease: ${{ steps.release-meta.outputs.is_prerelease }}
+
+    steps:
+      - name: 检出源码 (全量历史供日志生成)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # 提示：如需在网页端手动触发发版后自动级联触发其它监听 push tags 的工作流，
+          # 可在仓库配置具备 repo 权限的个人访问令牌 RELEASE_PAT；未配置时安全回退使用 GITHUB_TOKEN
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: 解析与校验发版版本号 (Resolve & Validate Release Version)
+        id: release-meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # 严格防呆自检：阻断在非主干分支误触发发版
+            CURRENT_REF="${{ github.ref_name }}"
+            DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+            if [ -n "$DEFAULT_BRANCH" ] && [ "$CURRENT_REF" != "$DEFAULT_BRANCH" ]; then
+              echo "::error::禁止在非默认主干分支 [$CURRENT_REF] 触发发版！默认主干为 [$DEFAULT_BRANCH]，请切换至主干分支后重试。"
+              exit 1
+            elif [ -z "$DEFAULT_BRANCH" ] && [ "$CURRENT_REF" != "main" ] && [ "$CURRENT_REF" != "master" ]; then
+              echo "::error::禁止在非主干分支 [$CURRENT_REF] 触发发版！仅允许在 main 或 master 分支发版。"
+              exit 1
+            fi
+
+            TAG_NAME="${{ inputs.version }}"
+            # 自动补全前缀 v
+            if [[ "$TAG_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+              TAG_NAME="v$TAG_NAME"
+            fi
+            # 语义化版本正则校验
+            if ! echo "$TAG_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+              echo "::error::版本号 [$TAG_NAME] 不符合语义化版本规范！必须形如 v1.0.0 或 v1.0.0-rc.1"
+              exit 1
+            fi
+            # 校验远端是否已存在同名 Tag
+            if git ls-remote --tags origin "refs/tags/$TAG_NAME" | grep -q "$TAG_NAME"; then
+              echo "::error::远程仓库已存在相同标签 [$TAG_NAME]，禁止重复发版！"
+              exit 1
+            fi
+            # 在当前提交显式创建附注 Tag 并推送到 GitHub 远端
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+            git push origin "$TAG_NAME"
+            echo "已由 GitHub Actions 显式创建并推送标签: $TAG_NAME"
+          else
+            TAG_NAME="${{ github.ref_name }}"
+            # 语义化版本正则双重防呆：阻断非标原生标签误触发发版
+            if ! echo "$TAG_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+              echo "::error::推送的标签 [$TAG_NAME] 不符合语义化版本规范！必须形如 v1.0.0 或 v1.0.0-rc.1，已安全终止发版流水线。"
+              exit 1
+            fi
+          fi
+
+          RAW_VERSION=$(echo "$TAG_NAME" | sed 's/^v//')
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "raw_version=$RAW_VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$TAG_NAME" =~ - ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ------------------------------------------------------------------------
+      # 打包构建插槽（如有打包产物需上传至 Release 附件，在此处编译并计算校验和）
+      # ------------------------------------------------------------------------
+      # - name: 编译打包产物与计算安全校验和示例 (SHA-256)
+      #   run: |
+      #     mkdir -p dist
+      #     tar -czf dist/release-assets.tar.gz README.md LICENSE
+      #     # 自动为 dist 目录下所有文件生成 SHA-256 校验清单（排除 checksums 自身，防自污染报错）
+      #     cd dist && sha256sum $(ls -1 | grep -v '^checksums\.txt$') > checksums.txt
+
+      - name: 生成发布日志 (基于 Commit 与 PR)
+        uses: orhun/git-cliff-action@v4
+        id: git-cliff
+        with:
+          # 智能容错：优先使用仓库根目录的 .cliff.toml；若未配置则自动回退到内置默认 Conventional Commits 规范
+          config: ${{ hashFiles('.cliff.toml') != '' && '.cliff.toml' || '' }}
+          args: --tag ${{ steps.release-meta.outputs.tag_name }} --latest --strip header --github-repo ${{ github.repository }}
+        env:
+          OUTPUT: CHANGELOG_RELEASE.md
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 创建 GitHub Release 并挂载发布内容
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.release-meta.outputs.tag_name }}
+          name: ${{ steps.release-meta.outputs.tag_name }}
+          body: ${{ steps.git-cliff.outputs.content }}
+          draft: false
+          # 自动识别语义化版本连字符（如 v1.0.0-beta.1 / v1.0.0-rc.1 自动打上 Pre-release 标签）
+          prerelease: ${{ steps.release-meta.outputs.is_prerelease == 'true' }}
+          # 如需随 Release 挂载可供直接下载的安装包/二进制文件与校验清单，解除下方注释并配置产物路径
+          # files: |
+          #   dist/*.tar.gz
+          #   dist/checksums.txt
+          #   target/*.jar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# ==============================================================================
+# 💡 语言生态官方包分发 (Publish) 与容器镜像构建 (Docker) 指引
+# ------------------------------------------------------------------------------
+# 本流水线聚焦于通用的 GitHub Release 发版与更新日志提取（保证核心发版引擎纯净健壮）。
+# 若项目需要发布至语言生态中心仓库（npm / Maven Central / PyPI / Crates.io / GoReleaser）
+# 或构建多架构 Docker 容器镜像，请直接选用模版资产库中开箱即用的完整专属流水线：
+#
+# 1. 语言官方包分发: .github/workflow-templates/languages/<language>/publish.yml
+# 2. 容器镜像构建:   .github/workflow-templates/languages/<language>/docker.yml
+# 3. 生产与边缘部署: .github/workflow-templates/deployments/
+# ==============================================================================

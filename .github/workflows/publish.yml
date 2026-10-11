@@ -1,0 +1,73 @@
+# ==============================================================================
+# 工作流模版：Python 发行包发布至 PyPI (Python Publish - PyPI)
+# 适用场景：开源 Python 类库、CLI 工具发布至 PyPI 官方注册表 (pypi.org)
+# 触发通道：
+#   - 标签推送 (push tags: v*)：与 GitHub Release 发版工作流协同触发
+#   - 网页手动触发 (workflow_dispatch)：支持指定目标版本号手动触发发布
+# 认证安全策略 (现代化推荐)：
+#   - PyPI Trusted Publisher (OIDC 免密钥)：无需在仓库硬编码或配置静态 API Token！
+#     只需在 pypi.org 项目设置中将本 GitHub 仓库及工作流路径添加为 Trusted Publisher，
+#     并授予 permissions.id-token: write，即可实现极其安全的免密自动分发。
+#   - 传统 Token 兼容：如使用传统 Token，可向 pypa/gh-action-pypi-publish 注入
+#     password: ${{ secrets.PYPI_API_TOKEN }}
+# ==============================================================================
+
+name: Python Publish (PyPI)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号 (形如 v1.0.0)'
+        required: true
+        type: string
+
+# 并发控制：包分发流水线单例排队执行，严禁取消
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish-pypi:
+    name: 构建包并发布至 PyPI
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # PyPI Trusted Publisher (OIDC) 无需静态 Token，安全便捷
+    steps:
+      - name: 解析版本号
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG_NAME="${{ inputs.version }}"
+          else
+            TAG_NAME="${{ github.ref_name }}"
+          fi
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: 检出源码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.tag_name }}
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # 推荐稳健主流版本；如需升级可修改为 '3.12' 或最新版本
+
+      - name: 安装打包构建工具
+        run: pip install build
+
+      - name: 编译构建发行包 (sdist & wheel)
+        run: python -m build
+
+      - name: 发布至 PyPI (使用仓库配置的 PYPI_API_TOKEN)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
