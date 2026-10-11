@@ -10,7 +10,9 @@ __version__ = "0.1.0"
 
 def main() -> None:
     """服务主入口点。"""
-    pass
+    from mcp_server_tcp.server import mcp
+
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
