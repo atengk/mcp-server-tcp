@@ -64,7 +64,7 @@ jobs:
 
       - name: 设置 QEMU 模拟器 (多架构支持)
         if: steps.check-tag.outputs.skip != 'true'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: 设置 Docker Buildx
         if: steps.check-tag.outputs.skip != 'true'
@@ -75,7 +75,7 @@ jobs:
       # ------------------------------------------------------------------------
       - name: 登录 GHCR
         if: steps.check-tag.outputs.skip != 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -85,7 +85,7 @@ jobs:
       # 方式 B (可选扩展)：如需同时推送至 Docker Hub，解除下方注释并配置 Secrets
       # ------------------------------------------------------------------------
       # - name: 登录 Docker Hub
-      #   uses: docker/login-action@v3
+      #   uses: docker/login-action@v4
       #   with:
       #     username: ${{ secrets.DOCKERHUB_USERNAME }}
       #     password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -93,7 +93,7 @@ jobs:
       - name: 提取 Docker 镜像元数据 (自动计算 SemVer 标签)
         id: meta
         if: steps.check-tag.outputs.skip != 'true'
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             ghcr.io/${{ env.REPO_LC }}
@@ -108,7 +108,7 @@ jobs:
 
       - name: 构建并推送多架构镜像 (amd64 / arm64)
         if: steps.check-tag.outputs.skip != 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
