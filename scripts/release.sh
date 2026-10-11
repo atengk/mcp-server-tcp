@@ -208,7 +208,7 @@ else
     BASE_VERSION="$LATEST_TAG"
   fi
   # 提取版本号数字部分 (去掉 v 前缀以及可能的预发布后缀与构建元数据)
-  CLEAN_VER=$(echo "$BASE_VERSION" | sed 's/^v//' | cut -d'-' -f1 | cut -d'+' -f1)
+  CLEAN_VER=$(echo "${BASE_VERSION#v}" | cut -d'-' -f1 | cut -d'+' -f1)
   V_MAJOR=$(echo "$CLEAN_VER" | cut -d'.' -f1)
   V_MINOR=$(echo "$CLEAN_VER" | cut -d'.' -f2)
   V_PATCH=$(echo "$CLEAN_VER" | cut -d'.' -f3)
@@ -287,7 +287,7 @@ fi
 log_success "标签唯一性检查通过: $TARGET_VERSION 未曾被使用"
 
 # 提取不带 v 的纯版本号供插槽使用
-RAW_VERSION=$(echo "$TARGET_VERSION" | sed 's/^v//')
+RAW_VERSION="${TARGET_VERSION#v}"
 
 # ==============================================================================
 # 3. 拟执行动作汇总与最终确认
