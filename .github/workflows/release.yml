@@ -109,14 +109,18 @@ jobs:
           fi
 
       # ------------------------------------------------------------------------
-      # 打包构建插槽（如有打包产物需上传至 Release 附件，在此处编译并计算校验和）
+      # 打包构建发行制品 (sdist / wheel) 并计算安全校验和 (SHA-256)
       # ------------------------------------------------------------------------
-      # - name: 编译打包产物与计算安全校验和示例 (SHA-256)
-      #   run: |
-      #     mkdir -p dist
-      #     tar -czf dist/release-assets.tar.gz README.md LICENSE
-      #     # 自动为 dist 目录下所有文件生成 SHA-256 校验清单（排除 checksums 自身，防自污染报错）
-      #     cd dist && sha256sum $(ls -1 | grep -v '^checksums\.txt$') > checksums.txt
+      - name: 设置 uv 高性能打包工具链
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: 编译构建发行制品 (sdist & wheel) 并生成完整性校验清单
+        run: |
+          uv build
+          # 自动为 dist 目录下所有分发包生成 SHA-256 校验清单（排除 checksums 自身，防自污染报错）
+          cd dist && sha256sum $(ls -1 | grep -v '^checksums\.txt$') > checksums.txt
 
       - name: 生成发布日志 (基于 Commit 与 PR)
         uses: orhun/git-cliff-action@v4
@@ -138,11 +142,10 @@ jobs:
           draft: false
           # 自动识别语义化版本连字符（如 v1.0.0-beta.1 / v1.0.0-rc.1 自动打上 Pre-release 标签）
           prerelease: ${{ steps.release-meta.outputs.is_prerelease == 'true' }}
-          # 如需随 Release 挂载可供直接下载的安装包/二进制文件与校验清单，解除下方注释并配置产物路径
-          # files: |
-          #   dist/*.tar.gz
-          #   dist/checksums.txt
-          #   target/*.jar
+          files: |
+            dist/*.tar.gz
+            dist/*.whl
+            dist/checksums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

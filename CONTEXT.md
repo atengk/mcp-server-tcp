@@ -49,3 +49,10 @@ _Avoid_: 16进制文本, 字节字符串, 二进制数据
 **Text Payload**:
 以特定字符集（默认 UTF-8）编码的明文字符串。
 _Avoid_: 纯文本, 字符串数据
+
+### 发布与制品分发
+
+**Release Asset**:
+随 GitHub Release 自动化发布流程产出并挂载的可下载二进制/打包制品，包含 sdist 源码压缩包（`.tar.gz`）、wheel 包（`.whl`）及 SHA-256 完整性校验清单（`checksums.txt`）。
+_Avoid_: 附件文件, 附带下载, 安装包
+
