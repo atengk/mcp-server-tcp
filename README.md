@@ -11,6 +11,9 @@
   <a href="https://github.com/atengk/mcp-server-tcp/releases">
     <img src="https://img.shields.io/github/v/release/atengk/mcp-server-tcp?style=flat-square" alt="Release" />
   </a>
+  <a href="https://pypi.org/project/atengk-mcp-server-tcp/">
+    <img src="https://img.shields.io/pypi/v/atengk-mcp-server-tcp?style=flat-square" alt="PyPI" />
+  </a>
   <a href="./LICENSE">
     <img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square" alt="License" />
   </a>
@@ -82,7 +85,7 @@
   "mcpServers": {
     "tcp": {
       "command": "uvx",
-      "args": ["mcp-server-tcp"],
+      "args": ["atengk-mcp-server-tcp"],
       "env": {
         "MCP_TCP_MAX_CONNECTIONS": "10",
         "MCP_TCP_IDLE_TIMEOUT_SECONDS": "300.0",
@@ -113,7 +116,7 @@
 
 ```bash
 # 方式 A：通过 uvx 直接启动
-uvx mcp-server-tcp
+uvx atengk-mcp-server-tcp
 
 # 方式 B：通过 Docker 运行
 docker run -i --rm ghcr.io/atengk/mcp-server-tcp:latest

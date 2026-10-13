@@ -60,3 +60,8 @@ _Avoid_: 纯文本, 字符串数据
 随 GitHub Release 自动化发布流程产出并挂载的可下载二进制/打包制品，包含 sdist 源码压缩包（`.tar.gz`）、wheel 包（`.whl`）及 SHA-256 完整性校验清单（`checksums.txt`）。
 _Avoid_: 附件文件, 附带下载, 安装包
 
+**Distribution Package**:
+由 PyPI 官方注册表（`pypi.org`）托管并分发的 Python 发行包名（`atengk-mcp-server-tcp`），供 `pip` 与 `uvx` 检索与安装。
+_Avoid_: 模块名, 源码目录名, 导入路径
+
+

@@ -35,4 +35,4 @@ RUN pip install --upgrade pip && \
 USER appuser
 
 # 默认入口命令：启动 TCP MCP Server
-ENTRYPOINT ["mcp-server-tcp"]
+ENTRYPOINT ["atengk-mcp-server-tcp"]
