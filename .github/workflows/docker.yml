@@ -68,7 +68,7 @@ jobs:
 
       - name: 设置 Docker Buildx
         if: steps.check-tag.outputs.skip != 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # ------------------------------------------------------------------------
       # 方式 A (默认推荐)：登录 GitHub Container Registry (ghcr.io)
