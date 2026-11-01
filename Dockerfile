@@ -3,7 +3,7 @@
 # 采用轻量安全 Python 3.11-slim 基础镜像，非 root 用户运行
 # ==============================================================================
 
-FROM python:3.11-slim AS runtime
+FROM python:3.15-slim AS runtime
 
 # 设置环境不变量
 ENV PYTHONDONTWRITEBYTECODE=1 \
