@@ -47,7 +47,7 @@ jobs:
 
     steps:
       - name: 检出源码 (全量历史供日志生成)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           # 提示：如需在网页端手动触发发版后自动级联触发其它监听 push tags 的工作流，
